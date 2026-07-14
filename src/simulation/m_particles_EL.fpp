@@ -2101,7 +2101,8 @@ contains
 
     end function particle_in_domain_physical
 
-    !> The purpose of this procedure is to calculate the gradient from reconstructed states along the x, y and z
+    !> The purpose of this procedure is to calculate the gradient from reconstructed states along the x, y and z Jose provided this
+    !! indexing bugfix for parallel EL particle spreading.
     !! @param vL_field left edge reconstructed values
     !! @param vR_field right edge reconstructed values
     !! @param dq Output gradient of q
