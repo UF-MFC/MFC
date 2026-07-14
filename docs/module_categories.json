@@ -35,7 +35,9 @@
             "m_acoustic_src",
             "m_body_forces",
             "m_pressure_relaxation",
-            "m_collisions"
+            "m_collisions",
+            "m_particles_EL",
+            "m_particles_EL_packing"
         ]
     },
     {
