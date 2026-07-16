@@ -1006,9 +1006,13 @@ def _load():
     _pb_attrs["radius"] = (REAL, _pb_tags)
     _pb_attrs["mass"] = (REAL, _pb_tags)
     _pb_attrs["min_spacing"] = (REAL, _pb_tags)
+    _pb_attrs["shell_inner_radius"] = (REAL, _pb_tags)
+    _pb_attrs["shell_outer_radius"] = (REAL, _pb_tags)
     _pb_attrs["moving_ibm"] = (INT, _pb_tags)
     _pb_attrs["seed"] = (INT, _pb_tags)
     _pb_attrs["packing_method"] = (INT, _pb_tags)
+    _pb_attrs["periodic"] = (INT, _pb_tags)
+    _pb_attrs["cloud_geometry"] = (INT, _pb_tags)
     REGISTRY.register_family(
         IndexedFamily(
             base_name="particle_cloud",
@@ -1106,8 +1110,38 @@ def _load():
         _r(f"lag_params%{a}", LOG, {"bubbles"})
     for a in ["solver_approach", "cluster_type", "smooth_type", "nBubs_glb", "drag_model", "vel_model", "charNz"]:
         _r(f"lag_params%{a}", INT, {"bubbles"})
+    for a in [
+        "nParticles_glb",
+        "qs_drag_model",
+        "stokes_drag",
+        "added_mass_model",
+        "interpolation_order",
+        "N_collision_subcycles",
+        "packing_flag",
+        "packing_size_distribution",
+        "packing_seed",
+        "packing_max_attempts",
+        "packing_periodic",
+    ]:
+        _r(f"lag_params%{a}", INT, {"particles"})
+    for a in ["collision_force", "subcycle_collisions", "qs_fluct_force"]:
+        _r(f"lag_params%{a}", LOG, {"particles"})
     for a in ["epsilonb", "valmaxvoid", "charwidth"]:
         _r(f"lag_params%{a}", REAL, {"bubbles"})
+    for a in [
+        "packing_volume_fraction",
+        "packing_diameter_min",
+        "packing_diameter_max",
+        "packing_diameter_mean",
+        "packing_diameter_std",
+        "packing_min_spacing",
+        "packing_shell_inner_radius",
+        "packing_shell_outer_radius",
+    ]:
+        _r(f"lag_params%{a}", REAL, {"particles"})
+    for d in range(1, 4):
+        for a in ["packing_centroid", "packing_length", "packing_velocity"]:
+            _r(f"lag_params%{a}({d})", REAL, {"particles"})
     _r("lag_params%input_path", STR, {"bubbles"})
 
     # chem_params

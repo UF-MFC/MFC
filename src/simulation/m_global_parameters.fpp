@@ -607,6 +607,31 @@ contains
         lag_params%charNz = dflt_int
         lag_params%valmaxvoid = dflt_real
         lag_params%input_path = 'input/lag_bubbles.dat'
+        lag_params%nParticles_glb = 0
+        lag_params%qs_drag_model = 0
+        lag_params%stokes_drag = 0
+        lag_params%added_mass_model = 0
+        lag_params%interpolation_order = 1
+        lag_params%collision_force = .false.
+        lag_params%subcycle_collisions = .false.
+        lag_params%N_collision_subcycles = 1
+        lag_params%qs_fluct_force = .false.
+        lag_params%packing_flag = 0
+        lag_params%packing_size_distribution = 0
+        lag_params%packing_seed = 1
+        lag_params%packing_max_attempts = 1000
+        lag_params%packing_periodic = 0
+        lag_params%packing_volume_fraction = dflt_real
+        lag_params%packing_diameter_min = dflt_real
+        lag_params%packing_diameter_max = dflt_real
+        lag_params%packing_diameter_mean = dflt_real
+        lag_params%packing_diameter_std = dflt_real
+        lag_params%packing_min_spacing = 0._wp
+        lag_params%packing_centroid(:) = 0._wp
+        lag_params%packing_length(:) = dflt_real
+        lag_params%packing_velocity(:) = 0._wp
+        lag_params%packing_shell_inner_radius = dflt_real
+        lag_params%packing_shell_outer_radius = dflt_real
         moving_lag_bubbles = .false.
         lag_vel_model = dflt_int
 
@@ -639,9 +664,13 @@ contains
             particle_cloud(i)%radius = dflt_real
             particle_cloud(i)%mass = dflt_real
             particle_cloud(i)%min_spacing = 0._wp
+            particle_cloud(i)%shell_inner_radius = dflt_real
+            particle_cloud(i)%shell_outer_radius = dflt_real
             particle_cloud(i)%moving_ibm = 0
             particle_cloud(i)%seed = 0
             particle_cloud(i)%packing_method = dflt_int
+            particle_cloud(i)%periodic = 0
+            particle_cloud(i)%cloud_geometry = 1
         end do
 
         do i = 1, num_ib_patches_max_namelist

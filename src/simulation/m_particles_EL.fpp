@@ -23,6 +23,7 @@ module m_particles_EL
     use m_mpi_common
     use m_ibm
     use m_chemistry
+    use m_particles_EL_packing
 
     implicit none
 
@@ -301,6 +302,8 @@ contains
             @:ACC_SETUP_SFs(weights_z_grad(i))
         end do
 
+        if (lag_params%packing_flag >= 1) call s_estimate_EL_particle_count()
+
         ! Allocating space for lagrangian variables
         nParticles_glb = lag_params%nParticles_glb
 
@@ -444,8 +447,9 @@ contains
         type(scalar_field), dimension(sys_size), intent(inout)     :: q_cons_vf
         type(integer_field), dimension(1:num_dims,1:2), intent(in) :: bc_type
         real(wp), dimension(8)                                     :: inputParticle
+        real(wp), allocatable, dimension(:,:)                      :: packedParticles
         real(wp)                                                   :: qtime
-        integer                                                    :: id, particle_id, save_count
+        integer                                                    :: id, particle_id, save_count, n_packed
         integer                                                    :: i, ios
         logical                                                    :: file_exist, indomain
         integer, dimension(3)                                      :: cell
@@ -466,18 +470,37 @@ contains
         end if
 
         if (save_count == 0) then
-            if (proc_rank == 0) print *, 'Reading lagrange particles input file.'
-            call my_inquire(trim(lag_params%input_path), file_exist)
-            if (file_exist) then
-                open (94, file=trim(lag_params%input_path), form='formatted', iostat=ios)
-                do while (ios == 0)
-                    read (94, *, iostat=ios) (inputParticle(i), i=1, 8)
-                    if (ios /= 0) cycle
+            if (lag_params%packing_flag < 1) then
+                if (proc_rank == 0) print *, 'Reading lagrange particles input file.'
+                call my_inquire(trim(lag_params%input_path), file_exist)
+                if (file_exist) then
+                    open (94, file=trim(lag_params%input_path), form='formatted', iostat=ios)
+                    do while (ios == 0)
+                        read (94, *, iostat=ios) (inputParticle(i), i=1, 8)
+                        if (ios /= 0) cycle
+                        indomain = particle_in_domain_physical(inputParticle(1:3))
+                        id = id + 1
+                        if (id > lag_params%nParticles_glb .and. proc_rank == 0) then
+                            call s_mpi_abort("Current number of particles is larger than nParticles_glb")
+                        end if
+                        if (indomain) then
+                            particle_id = particle_id + 1
+                            call s_add_particles(inputParticle, q_cons_vf, particle_id, id)
+                            lag_part_id(particle_id, 1) = id  ! global ID
+                            lag_part_id(particle_id, 2) = particle_id  ! local ID
+                            n_el_particles_loc = particle_id  ! local number of particles
+                        end if
+                    end do
+                    close (94)
+                else
+                    call s_mpi_abort("Initialize the lagrange particles in " // trim(lag_params%input_path))
+                end if
+            else
+                if (proc_rank == 0) print *, 'Generating packed lagrange particles.'
+                call s_generate_EL_particle_input(packedParticles, n_packed)
+                do id = 1, n_packed
+                    inputParticle(1:8) = packedParticles(1:8,id)
                     indomain = particle_in_domain_physical(inputParticle(1:3))
-                    id = id + 1
-                    if (id > lag_params%nParticles_glb .and. proc_rank == 0) then
-                        call s_mpi_abort("Current number of particles is larger than nParticles_glb")
-                    end if
                     if (indomain) then
                         particle_id = particle_id + 1
                         call s_add_particles(inputParticle, q_cons_vf, particle_id, id)
@@ -486,9 +509,7 @@ contains
                         n_el_particles_loc = particle_id  ! local number of particles
                     end if
                 end do
-                close (94)
-            else
-                call s_mpi_abort("Initialize the lagrange particles in " // trim(lag_params%input_path))
+                deallocate (packedParticles)
             end if
         else
             if (proc_rank == 0) print *, 'Restarting lagrange particles at save_count: ', save_count

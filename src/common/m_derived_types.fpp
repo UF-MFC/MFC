@@ -374,9 +374,13 @@ module m_derived_types
         real(wp) :: radius  !< Particle radius
         real(wp) :: mass  !< Particle mass
         real(wp) :: min_spacing  !< Minimum surface-to-surface gap (particle centers are 2*radius + min_spacing apart)
+        real(wp) :: shell_inner_radius  !< Inner radius for shell packing
+        real(wp) :: shell_outer_radius  !< Outer radius for shell packing
         integer  :: moving_ibm  !< Motion flag: 0=static, 1=moving (forces), 2=forced path
         integer  :: seed  !< Random seed for reproducible placement
         integer  :: packing_method  !< Packing algorithm: 1=rejection sampling, 2=lattice
+        integer  :: periodic  !< Periodic overlap flag for box rejection packing: 0=off, 1=on
+        integer  :: cloud_geometry  !< Cloud region geometry: 1=box, 2=hemisphere shell
     end type particle_cloud_parameters
 
     !> Derived type annexing the physical parameters (PP) of the fluids. These include the specific heat ratio function and liquid
@@ -547,6 +551,31 @@ module m_derived_types
         logical                    :: gravity_force  !< Include gravity force in translational motion
         logical                    :: kahan_summation  !< Use Kahan summation for void fraction accumulation (improves precision)
         character(LEN=pathlen_max) :: input_path  !< Path to lag_bubbles.dat
+        integer                    :: nParticles_glb  !< Global number of particles
+        integer                    :: qs_drag_model  !< Particle QS drag model
+        integer                    :: stokes_drag  !< Particle stokes drag
+        integer                    :: added_mass_model  !< Particle added mass model
+        integer                    :: interpolation_order  !< Fluid-to-Particle barycentric interpolation order
+        logical                    :: collision_force  !< Include collision forces
+        logical                    :: subcycle_collisions  !< Enable subcycling the collisions
+        integer                    :: N_collision_subcycles  !< Number of subcycles for collisions if subcycling
+        logical                    :: qs_fluct_force  !< QS Fluctuations
+        integer                    :: packing_flag  !< 0: read input_path, 1: pack box, 2: pack hemisphere shell
+        integer                    :: packing_size_distribution  !< 0: constant, 1: uniform, 2: Gaussian
+        integer                    :: packing_seed  !< Random seed for deterministic packing
+        integer                    :: packing_max_attempts  !< Maximum placement attempts per particle
+        integer                    :: packing_periodic  !< Periodic overlap flag for box packing: 0=off, 1=on
+        real(wp)                   :: packing_volume_fraction  !< Target packing volume fraction
+        real(wp)                   :: packing_diameter_min  !< Minimum packed particle diameter
+        real(wp)                   :: packing_diameter_max  !< Maximum packed particle diameter
+        real(wp)                   :: packing_diameter_mean  !< Mean or constant packed particle diameter
+        real(wp)                   :: packing_diameter_std  !< Gaussian standard deviation of packed particle diameter
+        real(wp)                   :: packing_min_spacing  !< Minimum surface-to-surface particle spacing
+        real(wp), dimension(3)     :: packing_centroid  !< Packing region centroid
+        real(wp), dimension(3)     :: packing_length  !< Box bounds for packing and shell clipping
+        real(wp), dimension(3)     :: packing_velocity  !< Initial velocity for packed particles
+        real(wp)                   :: packing_shell_inner_radius  !< Inner radius for shell packing
+        real(wp)                   :: packing_shell_outer_radius  !< Outer radius for shell packing
         real(wp)                   :: epsilonb  !< Standard deviation scaling for the gaussian function
         real(wp)                   :: charwidth  !< Domain virtual depth (z direction, for 2D simulations)
         integer                    :: charNz  !< Number of grid cells in characteristic depth

@@ -100,13 +100,11 @@ contains
         particle_cloud(1)%shell_outer_radius = lag_params%packing_shell_outer_radius
         particle_cloud(1)%moving_ibm = 0
         particle_cloud(1)%seed = lag_params%packing_seed
-        particle_cloud(1)%packing_method = lag_params%packing_flag
+        particle_cloud(1)%packing_method = 1
+        particle_cloud(1)%cloud_geometry = lag_params%packing_flag
+        particle_cloud(1)%periodic = lag_params%packing_periodic
 
-        ! Map EL packing flags to particle_cloud packing methods.
-        if (lag_params%packing_flag == 2) particle_cloud(1)%packing_method = 3
-
-        call s_generate_particle_clouds(particle_cloud_ibs)
-        n_generated = size(particle_cloud_ibs)
+        call s_generate_particle_clouds(particle_cloud_ibs, n_generated)
 
         do i = 1, n_generated
             input_particles(1, i) = particle_cloud_ibs(i)%x_centroid

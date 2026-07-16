@@ -265,7 +265,7 @@ contains
 
     end subroutine s_check_inputs_ib_injection
 
-    !> Checks that each active particle cloud has a valid packing_method specified
+    !> Checks that each active particle cloud has a valid packing method and cloud geometry specified
     impure subroutine s_check_inputs_particle_clouds
 
         integer          :: i
@@ -277,7 +277,20 @@ contains
                        & "particle_cloud("//trim(idxStr) &
                        & //")%packing_method must be specified (1 = rejection sampling, 2 = lattice)")
             @:PROHIBIT(particle_cloud(i)%packing_method /= 1 .and. particle_cloud(i)%packing_method /= 2, &
-                       & "particle_cloud("//trim(idxStr) //")%packing_method must be 1 (rejection sampling) or 2 (lattice)")
+                       & "particle_cloud("//trim(idxStr)//")%packing_method must be 1 (rejection sampling) or 2 (lattice)")
+            @:PROHIBIT(particle_cloud(i)%cloud_geometry /= 1 .and. particle_cloud(i)%cloud_geometry /= 2, &
+                       & "particle_cloud("//trim(idxStr)//")%cloud_geometry must be 1 (box) or 2 (hemisphere shell)")
+            @:PROHIBIT(particle_cloud(i)%cloud_geometry == 2 .and. particle_cloud(i)%packing_method /= 1, &
+                       & "particle_cloud("//trim(idxStr)//")%cloud_geometry=2 currently requires packing_method=1")
+            @:PROHIBIT(particle_cloud(i)%cloud_geometry == 2 .and. num_dims < 3, &
+                       & "particle_cloud("//trim(idxStr)//")%cloud_geometry=2 requires a 3D case")
+            @:PROHIBIT(particle_cloud(i)%cloud_geometry == 2 .and. (particle_cloud(i)%shell_inner_radius < 0._wp &
+                       & .or. particle_cloud(i)%shell_outer_radius <= particle_cloud(i)%shell_inner_radius), &
+                       & "particle_cloud("//trim(idxStr)//") requires 0 <= shell_inner_radius < shell_outer_radius")
+            @:PROHIBIT(particle_cloud(i)%periodic /= 0 .and. particle_cloud(i)%periodic /= 1, &
+                       & "particle_cloud("//trim(idxStr)//")%periodic must be 0 or 1")
+            @:PROHIBIT(particle_cloud(i)%periodic == 1 .and. particle_cloud(i)%cloud_geometry /= 1, &
+                       & "particle_cloud("//trim(idxStr)//")%periodic is only supported for box clouds")
         end do
 
     end subroutine s_check_inputs_particle_clouds
