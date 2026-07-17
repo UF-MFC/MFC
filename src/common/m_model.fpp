@@ -458,6 +458,22 @@ contains
 
     end subroutine s_skip_ignored_lines
 
+    !> This function replaces the Fortran random number generator because the native generator is not compatible with GPU routines.
+    function f_model_random_number(seed) result(rval)
+
+        $:GPU_ROUTINE(function_name='f_model_random_number', parallelism='[seq]', cray_inline=True)
+
+        integer, intent(inout) :: seed
+        real(wp)               :: rval
+
+        seed = ieor(seed, ishft(seed, 13))
+        seed = ieor(seed, ishft(seed, -17))
+        seed = ieor(seed, ishft(seed, 5))
+
+        rval = abs(real(seed, wp))/real(huge(seed), wp)
+
+    end function f_model_random_number
+
     !> Determine if a point is inside a surface using the generalized winding number (Jacobson et al., SIGGRAPH 2013). In 3D, sums
     !! the solid angle subtended by each triangle (Van Oosterom-Strackee formula). In 2D (p==0), sums the signed angle subtended by
     !! each boundary edge. Returns ~1.0 inside, ~0.0 outside. Unlike ray casting, this is robust to small triangles/edges and vertex

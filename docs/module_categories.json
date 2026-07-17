@@ -37,7 +37,8 @@
             "m_pressure_relaxation",
             "m_collisions",
             "m_particles_EL",
-            "m_particles_EL_packing"
+            "m_particles_EL_packing",
+            "m_particles_EL_kernels"
         ]
     },
     {
