@@ -74,7 +74,7 @@ contains
         real(wp)                                     :: volpart, stddsv, Vol_loc, func, alpha_f
         real(wp), dimension(3)                       :: nodecoord, center
         integer                                      :: ip, jp, kp, di, dj, dk, di_beg, di_end, dj_beg, dj_end, dk_beg, dk_end
-        integer, dimension(3)                        :: cellijk
+        integer, dimension(3)                        :: cellijk, cellijk_raw
 
         volpart = (4._wp/3._wp)*pi*rad**3._wp
 
@@ -101,14 +101,10 @@ contains
         do dk = dk_beg, dk_end
             do dj = dj_beg, dj_end
                 do di = di_beg, di_end
-                    nodecoord(1) = x_cc(di)
-                    nodecoord(2) = y_cc(dj)
-                    nodecoord(3) = 0._wp
-                    if (p > 0) nodecoord(3) = z_cc(dk)
-
-                    cellijk(1) = di
-                    cellijk(2) = dj
-                    cellijk(3) = dk
+                    cellijk_raw(1) = di
+                    cellijk_raw(2) = dj
+                    cellijk_raw(3) = dk
+                    call s_get_smear_cell_and_nodecoord(cellijk_raw, cellijk, nodecoord)
 
                     center(1:2) = pos(1:2)
                     center(3) = 0._wp
@@ -156,7 +152,7 @@ contains
         real(wp) :: addFun
         real(wp), dimension(3) :: nodecoord, center
         integer :: ip, jp, kp, di, dj, dk, di_beg, di_end, dj_beg, dj_end, dk_beg, dk_end, field_ind
-        integer, dimension(3) :: cellijk
+        integer, dimension(3) :: cellijk, cellijk_raw
 
         volpart = (4._wp/3._wp)*pi*rad**3._wp
 
@@ -193,14 +189,10 @@ contains
         do dk = dk_beg, dk_end
             do dj = dj_beg, dj_end
                 do di = di_beg, di_end
-                    nodecoord(1) = x_cc(di)
-                    nodecoord(2) = y_cc(dj)
-                    nodecoord(3) = 0._wp
-                    if (p > 0) nodecoord(3) = z_cc(dk)
-
-                    cellijk(1) = di
-                    cellijk(2) = dj
-                    cellijk(3) = dk
+                    cellijk_raw(1) = di
+                    cellijk_raw(2) = dj
+                    cellijk_raw(3) = dk
+                    call s_get_smear_cell_and_nodecoord(cellijk_raw, cellijk, nodecoord)
 
                     if (num_dims == 2) then
                         if (cyl_coord) then
@@ -278,6 +270,56 @@ contains
         func = exp(-arg)
 
     end subroutine s_applygaussian_aniso
+
+    !> Map a Gaussian-smearing stencil cell to the correct storage cell and coordinate. For local physical periodic boundaries,
+    !! stencil cells outside 0:m/0:n/0:p are stored in the wrapped physical cell while nodecoord is shifted by one domain length so
+    !! the Gaussian distance is the periodic image distance. Processor-boundary buffers are left unchanged for MPI reduction.
+    subroutine s_get_smear_cell_and_nodecoord(cell_in, cell_out, nodecoord)
+
+        $:GPU_ROUTINE(function_name='s_get_smear_cell_and_nodecoord',parallelism='[seq]', cray_inline=True)
+
+        integer, dimension(3), intent(in)   :: cell_in
+        integer, dimension(3), intent(out)  :: cell_out
+        real(wp), dimension(3), intent(out) :: nodecoord
+        integer                             :: image_shift, n_cells
+        real(wp)                            :: domain_length
+
+        cell_out = cell_in
+
+        if (bc_x%beg == BC_PERIODIC .and. bc_x%end == BC_PERIODIC) then
+            n_cells = m + 1
+            image_shift = floor(real(cell_in(1), wp)/real(n_cells, wp))
+            cell_out(1) = modulo(cell_in(1), n_cells)
+            domain_length = x_cb(m) - x_cb(-1)
+            nodecoord(1) = x_cc(cell_out(1)) + real(image_shift, wp)*domain_length
+        else
+            nodecoord(1) = x_cc(cell_in(1))
+        end if
+
+        if (bc_y%beg == BC_PERIODIC .and. bc_y%end == BC_PERIODIC) then
+            n_cells = n + 1
+            image_shift = floor(real(cell_in(2), wp)/real(n_cells, wp))
+            cell_out(2) = modulo(cell_in(2), n_cells)
+            domain_length = y_cb(n) - y_cb(-1)
+            nodecoord(2) = y_cc(cell_out(2)) + real(image_shift, wp)*domain_length
+        else
+            nodecoord(2) = y_cc(cell_in(2))
+        end if
+
+        nodecoord(3) = 0._wp
+        if (num_dims == 3) then
+            if (bc_z%beg == BC_PERIODIC .and. bc_z%end == BC_PERIODIC) then
+                n_cells = p + 1
+                image_shift = floor(real(cell_in(3), wp)/real(n_cells, wp))
+                cell_out(3) = modulo(cell_in(3), n_cells)
+                domain_length = z_cb(p) - z_cb(-1)
+                nodecoord(3) = z_cc(cell_out(3)) + real(image_shift, wp)*domain_length
+            else
+                nodecoord(3) = z_cc(cell_in(3))
+            end if
+        end if
+
+    end subroutine s_get_smear_cell_and_nodecoord
 
     !> The purpose of this subroutine is to apply the gaussian kernel function for each particle (Maeda and Colonius, 2018)).
     subroutine s_applygaussian(center, cellaux, nodecoord, stddsv, strength_idx, func)
