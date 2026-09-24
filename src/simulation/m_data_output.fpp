@@ -18,16 +18,21 @@ module m_data_output
     use m_sim_helpers
     use m_delay_file_access
     use m_ibm
+    use m_bubbles_EL
+    use m_particles_EL
     use m_boundary_common
     use m_constants, only: model_eqns_5eq, precision_single
 
     implicit none
 
     private
+    character(LEN=8), public :: lso_file_prefix = ''
     public :: s_initialize_data_output_module, s_open_run_time_information_file, s_open_probe_files, &
         & s_write_run_time_information, s_write_data_files, s_write_serial_data_files, s_write_parallel_data_files, &
         & s_write_ib_data_file, s_write_probe_files, s_write_ib_state_file, s_write_ib_force_history, s_close_ib_force_history, &
-        & s_close_run_time_information_file, s_close_probe_files, s_finalize_data_output_module
+        & s_close_run_time_information_file, s_close_probe_files, s_finalize_data_output_module, s_write_lso_stat_file
+    real(wp), public, allocatable, dimension(:,:) :: c_mass
+    $:GPU_DECLARE(create='[c_mass]')
 
     !> @name ICFL, VCFL, CCFL, TCFL, and Rc stability criteria extrema over all the time-steps
     !> @{
@@ -117,6 +122,8 @@ contains
 
         if (bubbles_lagrange) then
             write (3, '(13X,A10)', advance="no") trim('N Bubbles')
+        else if (particles_lagrange) then
+            write (3, '(13X,A10)', advance="no") trim('N Particles')
         end if
 
         write (3, *)  ! new line
@@ -185,6 +192,7 @@ contains
         real(wp)               :: icfl, vcfl, ccfl, tcfl, Rc
         real(wp)               :: mu_frac, mu_frac_max_loc, mu_frac_max_glb  !< Compression as a fraction of the EOS limit
         integer                :: fl  !< Fluid loop iterator
+        logical                :: include_cell  !< Cell is fluid, not ghost/inside an IB
         real(wp), dimension(4) :: stab_max_loc, stab_max_glb  !< Max-reduced criteria (ICFL, VCFL, CCFL, TCFL), packed
         real(wp), dimension(1) :: stab_min_loc, stab_min_glb  !< Min-reduced criteria (Rc), packed
 
@@ -196,47 +204,54 @@ contains
         mu_frac_max_loc = 0._wp
         ! Computing Stability Criteria at Current Time-step
         $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, vel, alpha, alpha_rho, Re, rho, vel_sum, pres, gamma, pi_inf, c, qv, &
-                            & icfl, vcfl, Rc, ccfl, tcfl, fl, mu_frac]', reduction='[[icfl_max_loc, vcfl_max_loc, ccfl_max_loc, &
-                            & tcfl_max_loc, mu_frac_max_loc], [Rc_min_loc]]', reductionOp='[max, min]')
+                            & icfl, vcfl, Rc, ccfl, tcfl, fl, mu_frac, include_cell]', reduction='[[icfl_max_loc, vcfl_max_loc, &
+                            & ccfl_max_loc, tcfl_max_loc, mu_frac_max_loc], [Rc_min_loc]]', reductionOp='[max, min]')
         do l = 0, p
             do k = 0, n
                 do j = 0, m
-                    call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, k, l)
+                    ! exclude cells inside of immersed boundaries
+                    include_cell = .true.
+                    if (ib) include_cell = (ib_markers%sf(j, k, l) == 0)
+                    if (include_cell) then
+                        call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, &
+                                                  & k, l)
 
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
+                        call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
 
-                    ! How close each Mie-Gruneisen phase is to the compression its Hugoniot fit can represent.
-                    ! Past 1 there is no shock state to find and the reference curve is fiction, so it is reduced
-                    ! out of the kernel and turned into an abort on the host -- s_mpi_abort cannot be called here.
-                    if (any_state_dependent_eos) then
-                        $:GPU_LOOP(parallelism='[seq]')
-                        do fl = 1, num_fluids
-                            if (eoss(fl) == eos_mie_gruneisen) then
-                                mu_frac = (alpha_rho(fl)/max(alpha(fl), sgm_eps)/eos_coeffs(fl)%rho0 - 1._wp)/eos_coeffs(fl)%mu_max
-                                mu_frac_max_loc = max(mu_frac_max_loc, mu_frac)
-                            end if
-                        end do
+                        ! How close each Mie-Gruneisen phase is to the compression its Hugoniot fit can represent.
+                        ! Past 1 there is no shock state to find and the reference curve is fiction, so it is reduced
+                        ! out of the kernel and turned into an abort on the host -- s_mpi_abort cannot be called here.
+                        if (any_state_dependent_eos) then
+                            $:GPU_LOOP(parallelism='[seq]')
+                            do fl = 1, num_fluids
+                                if (eoss(fl) == eos_mie_gruneisen) then
+                                    mu_frac = (alpha_rho(fl)/max(alpha(fl), &
+                                               & sgm_eps)/eos_coeffs(fl)%rho0 - 1._wp)/eos_coeffs(fl)%mu_max
+                                    mu_frac_max_loc = max(mu_frac_max_loc, mu_frac)
+                                end if
+                            end do
+                        end if
+
+                        if (any_non_newtonian) then
+                            Re(1) = 0._wp
+                            do fl = 1, num_fluids
+                                if (is_non_newtonian(fl)) then
+                                    Re(1) = Re(1) + alpha(fl)*hb_mu_max(fl)
+                                else
+                                    Re(1) = Re(1) + alpha(fl)*fluid_inv_re(fl)
+                                end if
+                            end do
+                            Re(1) = 1._wp/max(Re(1), sgm_eps)
+                        end if
+
+                        call s_compute_stability_from_dt(vel, c, rho, Re, alpha, alpha_rho, j, k, l, icfl, vcfl, Rc, ccfl, tcfl)
+
+                        icfl_max_loc = max(icfl_max_loc, icfl)
+                        vcfl_max_loc = max(vcfl_max_loc, merge(vcfl, 0.0_wp, viscous))
+                        ccfl_max_loc = max(ccfl_max_loc, merge(ccfl, 0.0_wp, surface_tension))
+                        tcfl_max_loc = max(tcfl_max_loc, merge(tcfl, 0.0_wp, heat_conduction))
+                        Rc_min_loc = min(Rc_min_loc, merge(Rc, huge(1.0_wp), viscous))
                     end if
-
-                    if (any_non_newtonian) then
-                        Re(1) = 0._wp
-                        do fl = 1, num_fluids
-                            if (is_non_newtonian(fl)) then
-                                Re(1) = Re(1) + alpha(fl)*hb_mu_max(fl)
-                            else
-                                Re(1) = Re(1) + alpha(fl)*fluid_inv_re(fl)
-                            end if
-                        end do
-                        Re(1) = 1._wp/max(Re(1), sgm_eps)
-                    end if
-
-                    call s_compute_stability_from_dt(vel, c, rho, Re, alpha, alpha_rho, j, k, l, icfl, vcfl, Rc, ccfl, tcfl)
-
-                    icfl_max_loc = max(icfl_max_loc, icfl)
-                    vcfl_max_loc = max(vcfl_max_loc, merge(vcfl, 0.0_wp, viscous))
-                    ccfl_max_loc = max(ccfl_max_loc, merge(ccfl, 0.0_wp, surface_tension))
-                    tcfl_max_loc = max(tcfl_max_loc, merge(tcfl, 0.0_wp, heat_conduction))
-                    Rc_min_loc = min(Rc_min_loc, merge(Rc, huge(1.0_wp), viscous))
                 end do
             end do
         end do
@@ -280,6 +295,13 @@ contains
             if (Rc_min_glb < Rc_min) Rc_min = Rc_min_glb
         end if
 
+        ! Any rank whose own local extremum violates the limit is, by construction of the
+        ! max-reduction above, a rank that actually contains the offending cell(s).
+        if ((.not. f_approx_equal(icfl_max_loc, icfl_max_loc)) .or. icfl_max_loc > 1._wp) then
+            call s_report_icfl_violation(q_prim_vf)
+        end if
+        call s_mpi_barrier()  ! ensure diagnostic output above is flushed before any rank aborts below
+
         if (proc_rank == 0) then
             write (3, '(13X,I9,13X,F10.6,13X,F10.6,13X,F10.6)', advance="no") t_step, dt, mytime, icfl_max_glb
 
@@ -297,6 +319,8 @@ contains
 
             if (bubbles_lagrange) then
                 write (3, '(13X,I10)', advance="no") n_el_bubs_glb
+            else if (particles_lagrange) then
+                write (3, '(13X,I10)', advance="no") n_el_particles_glb
             end if
 
             write (3, *)  ! new line
@@ -333,6 +357,135 @@ contains
 
     end subroutine s_write_run_time_information
 
+    !> Locate the grid cell responsible for an ICFL violation on this rank and report its state plus the nearest immersed-boundary
+    !! particles, to aid debugging stability failures in particle-laden high-Mach cases.
+    impure subroutine s_report_icfl_violation(q_prim_vf)
+
+        type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf
+        real(wp), dimension(num_fluids)                     :: alpha, alpha_rho
+        real(wp), dimension(num_vels)                       :: vel, vel_hit
+        real(wp), dimension(2)                              :: Re
+        real(wp)                                            :: rho, vel_sum, pres, gamma, pi_inf, qv, c
+        real(wp)                                            :: rho_hit, pres_hit, c_hit
+        real(wp)                                            :: icfl, vcfl, Rc, ccfl, tcfl, icfl_hit
+        integer                                             :: i, j, k, l, fl, j_hit, k_hit, l_hit
+        real(wp)                                            :: x_hit, y_hit, z_hit, dist
+        logical                                             :: nan_hit
+        integer                                             :: near1_id, near2_id
+        real(wp)                                            :: near1_dist, near2_dist
+
+        do i = 1, sys_size
+            $:GPU_UPDATE(host='[q_prim_vf(i)%sf(:, :, :)]')
+        end do
+        if (ib) then
+            $:GPU_UPDATE(host='[ib_markers%sf]')
+        end if
+
+        icfl_hit = -huge(1._wp)
+        nan_hit = .false.
+        j_hit = 0; k_hit = 0; l_hit = 0
+
+        scan: do l = 0, p
+            do k = 0, n
+                do j = 0, m
+                    if (ib) then
+                        if (ib_markers%sf(j, k, l) /= 0) cycle
+                    end if
+
+                    call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, k, l)
+                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
+
+                    if (any_non_newtonian) then
+                        Re(1) = 0._wp
+                        do fl = 1, num_fluids
+                            if (is_non_newtonian(fl)) then
+                                Re(1) = Re(1) + alpha(fl)*hb_mu_max(fl)
+                            else
+                                Re(1) = Re(1) + alpha(fl)*fluid_inv_re(fl)
+                            end if
+                        end do
+                        Re(1) = 1._wp/max(Re(1), sgm_eps)
+                    end if
+
+                    call s_compute_stability_from_dt(vel, c, rho, Re, alpha, alpha_rho, j, k, l, icfl, vcfl, Rc, ccfl, tcfl)
+
+                    if (.not. f_approx_equal(icfl, icfl)) then
+                        nan_hit = .true.
+                        j_hit = j; k_hit = k; l_hit = l
+                        rho_hit = rho; pres_hit = pres; c_hit = c; vel_hit = vel
+                        exit scan
+                    else if (icfl > icfl_hit) then
+                        icfl_hit = icfl
+                        j_hit = j; k_hit = k; l_hit = l
+                        rho_hit = rho; pres_hit = pres; c_hit = c; vel_hit = vel
+                    end if
+                end do
+            end do
+        end do scan
+
+        x_hit = x_cc(j_hit)
+        y_hit = 0._wp; if (n > 0) y_hit = y_cc(k_hit)
+        z_hit = 0._wp; if (p > 0) z_hit = z_cc(l_hit)
+
+        print '(A,I0,A,I0,A,I0,A,I0,A)', 'ICFL violation on rank ', proc_rank, ': cell (j,k,l) = (', j_hit, ',', k_hit, ',', &
+            & l_hit, ')'
+        if (nan_hit) then
+            print '(A)', '  icfl         = NaN'
+        else
+            print '(A,ES16.6)', '  icfl         = ', icfl_hit
+        end if
+        print '(A,3(ES16.6,1X))', '  position     = ', x_hit, y_hit, z_hit
+        print '(A,ES16.6,A,ES16.6,A,ES16.6)', '  rho, pres, c = ', rho_hit, ', ', pres_hit, ', ', c_hit
+        print '(A,3(ES16.6,1X))', '  velocity     = ', vel_hit
+        if (ib) print '(A,I0)', '  ib_markers   = ', ib_markers%sf(j_hit, k_hit, l_hit)
+
+        if (ib .and. num_ibs > 0) then
+            near1_id = 0; near1_dist = huge(1._wp)
+            near2_id = 0; near2_dist = huge(1._wp)
+            do i = 1, num_ibs
+                dist = sqrt((x_hit - patch_ib(i)%x_centroid)**2 + (y_hit - patch_ib(i)%y_centroid)**2 + (z_hit &
+                            & - patch_ib(i)%z_centroid)**2)
+                if (dist < near1_dist) then
+                    near2_dist = near1_dist; near2_id = near1_id
+                    near1_dist = dist; near1_id = i
+                else if (dist < near2_dist) then
+                    near2_dist = dist; near2_id = i
+                end if
+            end do
+            if (near1_id > 0) then
+                print '(A,I0,A,ES16.6,A,ES16.6,A,3(ES16.6,1X))', '  nearest particle    id=', near1_id, ' dist=', near1_dist, &
+                    & ' gap=', near1_dist - patch_ib(near1_id)%radius, ' vel=', patch_ib(near1_id)%vel
+                print '(A,3(ES16.6,1X))', '    centroid    = ', patch_ib(near1_id)%x_centroid, patch_ib(near1_id)%y_centroid, &
+                    & patch_ib(near1_id)%z_centroid
+                print '(A,3(ES16.6,1X))', '    angular_vel = ', patch_ib(near1_id)%angular_vel
+                print '(A,3(ES16.6,1X))', '    force       = ', patch_ib(near1_id)%force
+                print '(A,3(ES16.6,1X))', '    torque      = ', patch_ib(near1_id)%torque
+                print '(A,I0,A,ES16.6,A,ES16.6)', '    moving_ibm  = ', patch_ib(near1_id)%moving_ibm, ' mass=', &
+                    & patch_ib(near1_id)%mass, ' moment=', patch_ib(near1_id)%moment
+            end if
+            if (near2_id > 0) then
+                print '(A,I0,A,ES16.6,A,ES16.6,A,3(ES16.6,1X))', '  2nd nearest particle id=', near2_id, ' dist=', near2_dist, &
+                    & ' gap=', near2_dist - patch_ib(near2_id)%radius, ' vel=', patch_ib(near2_id)%vel
+                print '(A,3(ES16.6,1X))', '    centroid    = ', patch_ib(near2_id)%x_centroid, patch_ib(near2_id)%y_centroid, &
+                    & patch_ib(near2_id)%z_centroid
+                print '(A,3(ES16.6,1X))', '    angular_vel = ', patch_ib(near2_id)%angular_vel
+                print '(A,3(ES16.6,1X))', '    force       = ', patch_ib(near2_id)%force
+            end if
+        end if
+
+        ! TEMPORARY DEBUG INSTRUMENTATION: dump a small x-neighborhood around the violating cell (including into the ghost/
+        ! halo region on either side) to check for a sharp discontinuity right at a processor boundary versus a smoothly
+        ! diverging field, since ICFL blowups have been observed specifically near rank boundaries.
+        print '(A)', '  x-neighborhood (dj, rho, pres, vel) around violating cell:'
+        do j = max(-buff_size, j_hit - 3), min(m + buff_size, j_hit + 3)
+            call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, k_hit, l_hit)
+            print '(A,I0,A,ES16.6,A,ES16.6,A,3(ES16.6,1X))', '    dj=', j - j_hit, ' rho=', rho, ' pres=', pres, ' vel=', vel
+        end do
+
+        call flush (6)
+
+    end subroutine s_report_icfl_violation
+
     !> Write grid and conservative variable data files in serial format
     impure subroutine s_write_serial_data_files(q_cons_vf, q_T_sf, q_prim_vf, t_step, bc_type, beta)
 
@@ -346,51 +499,66 @@ contains
         character(LEN=path_len + 3*name_len) :: file_path   !< Relative path to the grid and conservative variables data files
         logical :: file_exist                               !< Logical used to check existence of current time-step directory
         character(LEN=15) :: FMT
-        integer :: i, j, k, l, r
+        integer :: i, j, k, l, r, m_out, n_out, p_out
+
+        if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+            m_out = m_lso_ds; n_out = n_lso_ds; p_out = p_lso_ds
+        else
+            m_out = m; n_out = n; p_out = p
+        end if
 
         write (t_step_dir, '(A,I0,A,I0)') trim(case_dir) // '/p_all'
         write (t_step_dir, '(a,i0,a,i0)') trim(case_dir) // '/p_all/p', proc_rank, '/', t_step
 
-        file_path = trim(t_step_dir) // '/.'
-        call my_inquire(file_path, file_exist)
-        if (file_exist) call s_delete_directory(trim(t_step_dir))
-        call s_create_directory(trim(t_step_dir))
+        ! The filtered pass precedes the primary pass and must clean the directory only once.
+        if (lso_file_prefix /= '' .or. .not. (lso_filter .and. lso_filter_wrt)) then
+            file_path = trim(t_step_dir) // '/.'
+            call my_inquire(file_path, file_exist)
+            if (file_exist) call s_delete_directory(trim(t_step_dir))
+            call s_create_directory(trim(t_step_dir))
+        else
+            call s_create_directory(trim(t_step_dir))
+        end if
 
-        file_path = trim(t_step_dir) // '/x_cb.dat'
-
-        open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
-        write (2) x_cb(-1:m); close (2)
-
-        if (n > 0) then
-            file_path = trim(t_step_dir) // '/y_cb.dat'
+        if (lso_file_prefix == '') then
+            file_path = trim(t_step_dir) // '/x_cb.dat'
 
             open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
-            write (2) y_cb(-1:n); close (2)
+            write (2) x_cb(-1:m); close (2)
 
-            if (p > 0) then
-                file_path = trim(t_step_dir) // '/z_cb.dat'
+            if (n > 0) then
+                file_path = trim(t_step_dir) // '/y_cb.dat'
 
                 open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
-                write (2) z_cb(-1:p); close (2)
+                write (2) y_cb(-1:n); close (2)
+
+                if (p > 0) then
+                    file_path = trim(t_step_dir) // '/z_cb.dat'
+
+                    open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
+                    write (2) z_cb(-1:p); close (2)
+                end if
             end if
         end if
 
         do i = 1, sys_size
-            write (file_path, '(A,I0,A)') trim(t_step_dir) // '/q_cons_vf', i, '.dat'
+            write (file_path, '(A,I0,A)') trim(t_step_dir) // '/' // trim(lso_file_prefix) // 'q_cons_vf', i, '.dat'
 
             open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
 
-            write (2) q_cons_vf(i)%sf(0:m,0:n,0:p); close (2)
+            write (2) q_cons_vf(i)%sf(0:m_out,0:n_out,0:p_out); close (2)
         end do
+
+        if (lso_file_prefix /= '') return
 
         ! Lagrangian beta (void fraction) written as q_cons_vf(sys_size+1) to match the parallel I/O path and allow post_process to
         ! read it.
-        if (bubbles_lagrange) then
+        if (bubbles_lagrange .or. particles_lagrange) then
             write (file_path, '(A,I0,A)') trim(t_step_dir) // '/q_cons_vf', sys_size + 1, '.dat'
 
             open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
 
-            write (2) beta%sf(0:m,0:n,0:p); close (2)
+            write (2) beta%sf(0:m_out,0:n_out,0:p_out); close (2)
         end if
 
         if (qbmm .and. .not. polytropic) then
@@ -415,8 +583,8 @@ contains
             end do
         end if
 
-        ! Writing the IB markers
-        if (ib) then
+        ! Writing the IB markers - only on the primary pass.
+        if (ib .and. lso_file_prefix == '') then
             call s_write_serial_ib_data(t_step)
         end if
 
@@ -685,6 +853,42 @@ contains
 
     end subroutine s_write_serial_data_files
 
+    !> Set up MPI views for stride-downsampled LSO fields.
+    impure subroutine s_initialize_mpi_data_lso_ds(q_filt_ds_vf)
+
+        type(scalar_field), dimension(sys_size), intent(in) :: q_filt_ds_vf
+
+#ifdef MFC_MPI
+        integer, dimension(num_dims) :: sizes_glb, sizes_loc, start_lso
+        integer                      :: i, ierr
+
+        do i = 1, sys_size
+            MPI_IO_DATA%var(i)%sf => q_filt_ds_vf(i)%sf(0:m_lso_ds,0:n_lso_ds,0:p_lso_ds)
+        end do
+
+        sizes_glb(1) = m_glb_lso_ds + 1
+        sizes_loc(1) = m_lso_ds + 1
+        start_lso(1) = start_idx(1)/lso_down_sample_factor
+        if (num_dims >= 2) then
+            sizes_glb(2) = n_glb_lso_ds + 1
+            sizes_loc(2) = n_lso_ds + 1
+            start_lso(2) = start_idx(2)/lso_down_sample_factor
+        end if
+        if (num_dims == 3) then
+            sizes_glb(3) = p_glb_lso_ds + 1
+            sizes_loc(3) = p_lso_ds + 1
+            start_lso(3) = start_idx(3)/lso_down_sample_factor
+        end if
+
+        do i = 1, sys_size
+            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_lso, MPI_ORDER_FORTRAN, mpi_p, &
+                                          & MPI_IO_DATA%view(i), ierr)
+            call MPI_TYPE_COMMIT(MPI_IO_DATA%view(i), ierr)
+        end do
+#endif
+
+    end subroutine s_initialize_mpi_data_lso_ds
+
     !> Write grid and conservative variable data files in parallel via MPI I/O
     impure subroutine s_write_parallel_data_files(q_cons_vf, t_step, bc_type, beta, q_T_sf)
 
@@ -725,12 +929,16 @@ contains
         if (file_per_process) then
             call s_int_to_str(t_step, t_step_string)
 
-            if (down_sample) then
+            if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+                call s_initialize_mpi_data_lso_ds(q_cons_vf)
+            else if (down_sample) then
                 call s_initialize_mpi_data_ds(m_ds, n_ds, p_ds)
             else
                 if (ib) then
                     call s_initialize_mpi_data(q_cons_vf, ib_markers=ib_markers, ib_mpi_data=MPI_IO_IB_DATA, qbmm_pb=pb_ts(1), &
                                                & qbmm_mv=mv_ts(1))
+                else if (present(beta)) then
+                    call s_initialize_mpi_data(q_cons_vf, beta=beta, qbmm_pb=pb_ts(1), qbmm_mv=mv_ts(1))
                 else
                     call s_initialize_mpi_data(q_cons_vf, qbmm_pb=pb_ts(1), qbmm_mv=mv_ts(1))
                 end if
@@ -747,9 +955,7 @@ contains
             call s_mpi_barrier()
             call s_delay_file_access(proc_rank)
 
-            call s_initialize_mpi_data(q_cons_vf, qbmm_pb=pb_ts(1), qbmm_mv=mv_ts(1))
-
-            write (file_loc, '(I0,A,i7.7,A)') t_step, '_', proc_rank, '.dat'
+            write (file_loc, '(A,I0,A,i7.7,A)') trim(lso_file_prefix), t_step, '_', proc_rank, '.dat'
             file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
             if (file_exist .and. proc_rank == 0) then
@@ -762,6 +968,11 @@ contains
                 m_glb_save = m_glb_ds + 1
                 n_glb_save = n_glb_ds + 1
                 p_glb_save = p_glb_ds + 1
+            else if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+                data_size = (m_lso_ds + 1)*(n_lso_ds + 1)*(p_lso_ds + 1)
+                m_glb_save = m_glb_lso_ds + 1
+                n_glb_save = n_glb_lso_ds + 1
+                p_glb_save = p_glb_lso_ds + 1
             else
                 data_size = (m + 1)*(n + 1)*(p + 1)
                 m_glb_save = m_glb + 1
@@ -804,6 +1015,9 @@ contains
                         call MPI_FILE_WRITE_ALL(ifile, MPI_IO_DATA%var(i)%sf, data_size*mpi_io_type, mpi_io_p, status, ierr)
                     end do
                 end if
+                if (present(beta)) then
+                    call MPI_FILE_WRITE_ALL(ifile, MPI_IO_DATA%var(sys_size + 1)%sf, data_size*mpi_io_type, mpi_io_p, status, ierr)
+                end if
             end if
 
             call MPI_FILE_CLOSE(ifile, ierr)
@@ -812,7 +1026,9 @@ contains
                 call s_write_parallel_ib_data(t_step)
             end if
         else
-            if (ib) then
+            if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+                call s_initialize_mpi_data_lso_ds(q_cons_vf)
+            else if (ib) then
                 call s_initialize_mpi_data(q_cons_vf, ib_markers=ib_markers, ib_mpi_data=MPI_IO_IB_DATA, qbmm_pb=pb_ts(1), &
                                            & qbmm_mv=mv_ts(1))
             else if (present(beta)) then
@@ -821,7 +1037,7 @@ contains
                 call s_initialize_mpi_data(q_cons_vf, qbmm_pb=pb_ts(1), qbmm_mv=mv_ts(1))
             end if
 
-            write (file_loc, '(I0,A)') t_step, '.dat'
+            write (file_loc, '(A,I0,A)') trim(lso_file_prefix), t_step, '.dat'
             file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
             if (file_exist .and. proc_rank == 0) then
@@ -829,11 +1045,17 @@ contains
             end if
             call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
 
-            data_size = (m + 1)*(n + 1)*(p + 1)
-
-            m_MOK = int(m_glb + 1, MPI_OFFSET_KIND)
-            n_MOK = int(n_glb + 1, MPI_OFFSET_KIND)
-            p_MOK = int(p_glb + 1, MPI_OFFSET_KIND)
+            if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+                data_size = (m_lso_ds + 1)*(n_lso_ds + 1)*(p_lso_ds + 1)
+                m_MOK = int(m_glb_lso_ds + 1, MPI_OFFSET_KIND)
+                n_MOK = int(n_glb_lso_ds + 1, MPI_OFFSET_KIND)
+                p_MOK = int(p_glb_lso_ds + 1, MPI_OFFSET_KIND)
+            else
+                data_size = (m + 1)*(n + 1)*(p + 1)
+                m_MOK = int(m_glb + 1, MPI_OFFSET_KIND)
+                n_MOK = int(n_glb + 1, MPI_OFFSET_KIND)
+                p_MOK = int(p_glb + 1, MPI_OFFSET_KIND)
+            end if
             WP_MOK = int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
             MOK = int(1._wp, MPI_OFFSET_KIND)
             str_MOK = int(name_len, MPI_OFFSET_KIND)
@@ -916,7 +1138,7 @@ contains
         integer(kind=MPI_OFFSET_kind)        :: disp
         integer(kind=MPI_OFFSET_kind)        :: m_MOK, n_MOK, p_MOK
         integer(kind=MPI_OFFSET_kind)        :: WP_MOK, var_MOK, MOK
-        integer                              :: ifile, ierr, data_size
+        integer                              :: ifile, ierr, data_size, save_index
         integer, dimension(MPI_STATUS_SIZE)  :: status
         character(len=10)                    :: t_step_string
 
@@ -955,7 +1177,9 @@ contains
             call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
 
             var_MOK = int(sys_size + 1, MPI_OFFSET_KIND)
-            disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1 + int(time_step/t_step_save))
+            save_index = time_step
+            if (.not. cfl_dt) save_index = time_step/t_step_save
+            disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1 + int(save_index, MPI_OFFSET_KIND))
             if (time_step == 0) disp = 0
 
             call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, MPI_IO_IB_DATA%view, 'native', mpi_info_int, ierr)
@@ -1821,5 +2045,71 @@ contains
         end if
 
     end subroutine s_finalize_data_output_module
+
+    impure subroutine s_write_lso_stat_file(q_stat_vf, n_stat, t_step, fname)
+
+        type(scalar_field), intent(in)         :: q_stat_vf(:)
+        integer, intent(in)                    :: n_stat, t_step
+        character(LEN=*), intent(in), optional :: fname
+
+#ifdef MFC_MPI
+        integer                              :: ifile, ierr, data_size, i, j, k, l, mpi_view
+        integer, dimension(MPI_STATUS_SIZE)  :: status
+        integer(kind=MPI_OFFSET_KIND)        :: disp, field_size, var_MOK
+        integer, dimension(num_dims)         :: sizes_glb, sizes_loc, start_stat
+        integer                              :: m_loc, n_loc, p_loc
+        real(stp), allocatable               :: stat_io_buf(:,:,:)
+        character(LEN=path_len + 2*name_len) :: file_loc
+        logical                              :: file_exist
+
+        if (lso_down_sample_factor > 1) then
+            m_loc = m_lso_ds; n_loc = n_lso_ds; p_loc = p_lso_ds
+            sizes_glb(1) = m_glb_lso_ds + 1; sizes_loc(1) = m_loc + 1; start_stat(1) = start_idx(1)/lso_down_sample_factor
+            if (num_dims >= 2) then
+                sizes_glb(2) = n_glb_lso_ds + 1; sizes_loc(2) = n_loc + 1; start_stat(2) = start_idx(2)/lso_down_sample_factor
+            end if
+            if (num_dims == 3) then
+                sizes_glb(3) = p_glb_lso_ds + 1; sizes_loc(3) = p_loc + 1; start_stat(3) = start_idx(3)/lso_down_sample_factor
+            end if
+        else
+            m_loc = m; n_loc = n; p_loc = p
+            sizes_glb(1) = m_glb + 1; sizes_loc(1) = m_loc + 1; start_stat(1) = start_idx(1)
+            if (num_dims >= 2) then
+                sizes_glb(2) = n_glb + 1; sizes_loc(2) = n_loc + 1; start_stat(2) = start_idx(2)
+            end if
+            if (num_dims == 3) then
+                sizes_glb(3) = p_glb + 1; sizes_loc(3) = p_loc + 1; start_stat(3) = start_idx(3)
+            end if
+        end if
+
+        data_size = (m_loc + 1)*(n_loc + 1)*(p_loc + 1)
+        field_size = int(product(sizes_glb), MPI_OFFSET_KIND)*int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
+        if (present(fname)) then
+            write (file_loc, '(A,I0,A)') trim(fname), t_step, '.dat'
+        else
+            write (file_loc, '(A,I0,A)') 'lso_stat_', t_step, '.dat'
+        end if
+        file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
+        inquire (FILE=trim(file_loc), EXIST=file_exist)
+        if (file_exist .and. proc_rank == 0) call MPI_FILE_DELETE(file_loc, mpi_info_int, ierr)
+        call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+        allocate (stat_io_buf(0:m_loc,0:n_loc,0:p_loc))
+        do i = 1, n_stat
+            do l = 0, p_loc; do k = 0, n_loc; do j = 0, m_loc
+                stat_io_buf(j, k, l) = q_stat_vf(i)%sf(j, k, l)
+            end do; end do; end do
+            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_stat, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
+            call MPI_TYPE_COMMIT(mpi_view, ierr)
+            var_MOK = int(i, MPI_OFFSET_KIND)
+            disp = field_size*(var_MOK - 1)
+            call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, mpi_view, 'native', mpi_info_int, ierr)
+            call MPI_FILE_WRITE_ALL(ifile, stat_io_buf, data_size, mpi_io_p, status, ierr)
+            call MPI_TYPE_FREE(mpi_view, ierr)
+        end do
+        deallocate (stat_io_buf)
+        call MPI_FILE_CLOSE(ifile, ierr)
+#endif
+
+    end subroutine s_write_lso_stat_file
 
 end module m_data_output

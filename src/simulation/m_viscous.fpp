@@ -1136,10 +1136,11 @@ contains
         viscous_stress_tensor = 0._wp
         velocity_gradient_tensor = 0._wp
 
-        ! fd_coeff_x/y/z are computed for interior cells only (0:m, 0:n, 0:p), but s_compute_ib_forces samples this routine
-        ! fd_number cells out from an interior cell, so a body near a domain boundary asks for a coefficient that was never
-        ! computed. Read the nearest interior cell's coefficients there: on a uniform grid they are the same, and on a
-        ! stretched one this is the stencil the boundary cell itself uses.
+        ! (i,j,k) here may itself be an off-center sample (the caller evaluates this stencil
+        ! at i+l/j+l/k+l for the outer IB force integral), so fd_coeff_x/y/z must be looked up
+        ! at the nearest interior cell, not at (i,j,k) directly, otherwise this second,
+        ! inner stencil can index up to 2*fd_number past a domain/rank boundary, beyond even
+        ! the widened range from the fd_coeff OOB fix (see MFlowCode/MFC#1856).
         i_fd = min(max(i, 0), m)
         j_fd = min(max(j, 0), n)
         k_fd = min(max(k, 0), p)
