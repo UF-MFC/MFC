@@ -1,3 +1,10 @@
+import json
+import os
+import struct
+import subprocess
+from pathlib import Path
+
+import numpy as np
 import pytest
 
 from mfc.case_validator import CaseConstraintError, CaseValidator
@@ -68,3 +75,80 @@ def test_hemi_shell_validator_rejects_shell_outside_domain():
     params = {**_valid_cloud_params(), "particle_cloud(1)%x_centroid": 0.9, "particle_cloud(1)%shell_outer_radius": 0.3}
     with pytest.raises(CaseConstraintError, match="x-extent must lie within x_domain"):
         CaseValidator(params).validate("simulation")
+
+
+@pytest.mark.skipif(os.environ.get("MFC_TEST_CLOUD_OUTPUT") != "1", reason="requires prebuilt CPU MFC executables")
+@pytest.mark.parametrize("ranks,file_per_process,shell_axis", [(1, False, 1), (2, False, 2), (1, True, 2), (2, True, 1)])
+def test_simulation_reads_preprocessed_cloud(tmp_path, ranks, file_per_process, shell_axis):
+    """Simulation and restart must retain the placement written by pre_process."""
+    from .test.case import BASE_CFG
+
+    root = Path(__file__).resolve().parents[2]
+    params = {k: v for k, v in BASE_CFG.items() if not k.startswith(("patch_icpp(2)", "patch_icpp(3)"))}
+    params.update(_valid_cloud_params())
+    params.pop("bc_z%beg")
+    params.pop("bc_z%end")
+    params.update(
+        {
+            "m": 63,
+            "n": 63,
+            "p": 0,
+            "parallel_io": "T",
+            "file_per_process": "T" if file_per_process else "F",
+            "ib_state_wrt": "T",
+            "patch_icpp(1)%geometry": 3,
+            "patch_icpp(1)%x_centroid": 0.0,
+            "patch_icpp(1)%y_centroid": 0.0,
+            "patch_icpp(1)%length_x": 2.0,
+            "patch_icpp(1)%length_y": 2.0,
+            "patch_icpp(1)%vel(1)": 0.0,
+            "patch_icpp(1)%vel(2)": 0.0,
+            "particle_cloud(1)%num_particles": 4,
+            "particle_cloud(1)%radius": 0.08,
+            "particle_cloud(1)%shell_outer_radius": 0.6,
+            "particle_cloud(1)%shell_axis": shell_axis,
+            "particle_cloud(1)%seed": 12345,
+            "particle_cloud(1)%moving_ibm": 0,
+        }
+    )
+    case_path = tmp_path / "case.json"
+
+    def run(target):
+        case_path.write_text(json.dumps(params))
+        result = subprocess.run(
+            [str(root / "mfc.sh"), "run", str(case_path), "-t", target, "-n", str(ranks), "--no-build", "--no-gpu", "--no-debug", "--no-reldebug"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def positions(step):
+        records = {}
+        if file_per_process:
+            for rank in range(ranks):
+                data = (tmp_path / f"restart_data/lustre_{step}/ib_state_{step}_{rank:07d}.dat").read_bytes()
+                count = struct.unpack_from("=i", data)[0]
+                assert len(data) == 4 + count * 164
+                for idx in range(count):
+                    offset = 4 + idx * 164
+                    patch_id = struct.unpack_from("=i", data, offset)[0]
+                    assert patch_id not in records
+                    records[patch_id] = np.frombuffer(data, dtype=np.float64, count=20, offset=offset + 4)[16:20]
+        else:
+            data = np.fromfile(tmp_path / f"restart_data/ib_state_{step}.dat", dtype=np.float64).reshape(-1, 20)
+            records = {idx + 1: row[16:20] for idx, row in enumerate(data)}
+        assert set(records) == {1, 2, 3, 4}
+        return np.array([records[idx] for idx in sorted(records)])
+
+    run("pre_process")
+    initial = positions(0)
+    params["particle_cloud(1)%seed"] = 54321
+    run("simulation")
+    np.testing.assert_array_equal(positions(0), initial)
+    np.testing.assert_array_equal(positions(1), initial)
+    params.update({"t_step_start": 1, "t_step_stop": 2})
+    run("simulation")
+    np.testing.assert_array_equal(positions(2), initial)
