@@ -539,8 +539,8 @@ def test_generate_bcast_fpp_lag_chem_sim_only():
     pre = generate_bcast_fpp("pre")
     post = generate_bcast_fpp("post")
 
-    # lag_params under bubbles_lagrange guard
-    assert "if (bubbles_lagrange) then" in sim
+    # lag_params are needed by both bubble and Euler-Lagrange particle tracking.
+    assert "if (bubbles_lagrange .or. particles_lagrange) then" in sim
     assert "call MPI_BCAST(lag_params%solver_approach, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)" in sim
     assert "lag_params" not in pre
     assert "lag_params" not in post

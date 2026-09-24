@@ -72,7 +72,23 @@ SIM_GPU_DECL_VARS = {
     "igr_order",
     "igr_pres_lim",
     "int_comp",
+    "jwl_afterburn",
+    "jwl_reactive",
     "low_Mach",
+    "lso_R_gas",
+    "lso_mu",
+    "lso_n_passes_x",
+    "lso_n_passes_y",
+    "lso_n_passes_z",
+    "lso_a_x",
+    "lso_a_y",
+    "lso_a_z",
+    "lso2_n_passes_x",
+    "lso2_n_passes_y",
+    "lso2_n_passes_z",
+    "lso2_a_x",
+    "lso2_a_y",
+    "lso2_a_z",
     "m",
     "mapped_weno",
     "mixture_err",
@@ -528,7 +544,27 @@ _STRUCT_ROOTS = frozenset({"bc_x", "bc_y", "bc_z", "x_domain", "y_domain", "z_do
 # broadcast only, so these — including the 2D turb_pos/synth_L — are declared and
 # broadcast by hand in m_mpi_proxy.fpp. Skipped here so the scalar classifier does
 # not treat the base name as a missing-registry scalar.
-_MANUAL_ARRAY_RESIDUE = frozenset({"synth_n_waves_per_shell", "synth_k_shell", "synth_amp_shell", "turb_pos", "synth_L"})
+_MANUAL_ARRAY_RESIDUE = frozenset(
+    {
+        "synth_n_waves_per_shell",
+        "synth_k_shell",
+        "synth_amp_shell",
+        "turb_pos",
+        "synth_L",
+        "lso_a_x",
+        "lso_a_y",
+        "lso_a_z",
+        "lso2_a_x",
+        "lso2_a_y",
+        "lso2_a_z",
+        "lso_pp_a_x",
+        "lso_pp_a_y",
+        "lso_pp_a_z",
+        "lso_pp2_a_x",
+        "lso_pp2_a_y",
+        "lso_pp2_a_z",
+    }
+)
 
 # Variables excluded from broadcast generation (derived post-broadcast or non-namelist).
 # muscl_eps was previously excluded here on the assumption that it was derived
@@ -666,6 +702,15 @@ def _emit_bub_pp(lines: List[str]) -> None:
     lines.append("        end if")
 
 
+def _emit_particle_pp(lines: List[str]) -> None:
+    """Emit the solid-particle physical-property broadcast."""
+    members = sorted(k.split("%", 1)[1] for k in REGISTRY.all_params if k.startswith("particle_pp%"))
+    lines.append("        if (particles_lagrange) then")
+    for mem in members:
+        lines.append(f"            call MPI_BCAST(particle_pp%{mem}, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)")
+    lines.append("        end if")
+
+
 def _emit_lag_params(lines: List[str]) -> None:
     """Emit the lag_params member broadcast block (sim-only, under bubbles_lagrange guard).
 
@@ -681,7 +726,7 @@ def _emit_lag_params(lines: List[str]) -> None:
     unhandled = set(lag_all) - set(lag_log) - set(lag_int) - set(lag_real) - set(lag_str)
     if unhandled:
         raise ValueError(f"lag_params members with unhandled ParamType (would be silently missing from the broadcast): {sorted(unhandled)}")
-    lines.append("        if (bubbles_lagrange) then")
+    lines.append("        if (bubbles_lagrange .or. particles_lagrange) then")
     for mem in sorted(lag_log):
         lines.append(f"            call MPI_BCAST(lag_params%{mem}, 1, MPI_LOGICAL, 0, MPI_COMM_WORLD, ierr)")
     for mem in sorted(lag_int):
@@ -730,6 +775,8 @@ def _emit_fortran_array_dims(lines: List[str], target: str) -> None:
     """
     for name in sorted(FORTRAN_ARRAY_DIMS):
         if name not in NAMELIST_VARS or target not in NAMELIST_VARS[name]:
+            continue
+        if name in _MANUAL_ARRAY_RESIDUE:
             continue
         dim = FORTRAN_ARRAY_DIMS[name]
         # Determine element type from registry (use the (1) example entry)
@@ -820,8 +867,12 @@ def generate_bcast_fpp(target: str) -> str:
         lines.append("")
 
     if target == "sim":
+        if "particle_pp" in NAMELIST_VARS and "sim" in NAMELIST_VARS["particle_pp"]:
+            lines.append("        ! particle_pp members (under particles_lagrange guard)")
+            _emit_particle_pp(lines)
+            lines.append("")
         if "lag_params" in NAMELIST_VARS and "sim" in NAMELIST_VARS["lag_params"]:
-            lines.append("        ! lag_params members (under bubbles_lagrange guard)")
+            lines.append("        ! lag_params members (under bubble or particle guard)")
             _emit_lag_params(lines)
             lines.append("")
         if "chem_params" in NAMELIST_VARS and "sim" in NAMELIST_VARS["chem_params"]:

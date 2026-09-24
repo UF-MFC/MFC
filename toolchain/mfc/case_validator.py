@@ -144,7 +144,7 @@ PHYSICS_DOCS = {
     "check_model_eqns_and_num_fluids": {
         "title": "Model Equation Selection",
         "category": "Model Equations",
-        "explanation": ("Model 1: gamma-law single-fluid. Model 2: five-equation (Allaire). Model 3: six-equation (Saurel). Model 4: four-equation (single-component with bubbles)."),
+        "explanation": "Model 1: gamma-law single-fluid. Model 2: five-equation (Allaire). Model 3: six-equation (Saurel).",
         "references": ["Wilfong26", "Allaire02", "Saurel09"],
     },
     # Boundary Conditions
@@ -175,6 +175,16 @@ PHYSICS_DOCS = {
         "title": "Euler-Lagrange Bubble Model",
         "category": "Bubble Physics",
         "explanation": "2D/3D only. Requires polytropic = F and thermal = 3. Not compatible with model_eqns = 3. Kahan summation not compatible with --mixed precision.",
+    },
+    "check_el_particles": {
+        "title": "Euler-Lagrange Solid Particles",
+        "category": "Feature Compatibility",
+        "explanation": (
+            "Requires at least 2D, a positive lag_params%nParticles_glb and particle_pp%rho0ref_particle, "
+            "and lag_params%input_path naming the particle file. lag_params%solver_approach selects "
+            "one-way (1) or two-way (2) coupling. Cannot be combined with bubbles_lagrange. "
+            "These input constraints do not establish validation of drag, heat transfer or collisions."
+        ),
     },
     "check_reactive_burn": {
         "title": "Condensed-Phase Reactive Burn",
@@ -212,13 +222,22 @@ PHYSICS_DOCS = {
     "check_heat_conduction": {
         "title": "Fourier Heat Conduction",
         "category": "Numerical Schemes",
-        "math": r"k_i \geq 0, \quad k = \sum_i \alpha_i k_i",
+        "math": r"k_i \\geq 0, \\quad k = \\sum_i \\alpha_i k_i",
         "explanation": (
             "fluid_pp(i)%k_therm must be non-negative and, when positive, requires fluid_pp(i)%cv > 0 (the "
             "thermal-equilibrium mixture temperature is undefined without it). Only the stiffened-gas and "
             "ideal-gas equations of state are supported, and only model_eqns = 2 (5-equation) or 3 (6-equation): "
             "the mixture conductivity is weighted by the volume fractions those models carry, which model_eqns = 1 "
             "does not have. Not supported with igr or chemistry (which carries its own mixture-averaged conduction)."
+        ),
+    },
+    "check_lso_filter": {
+        "title": "LSO Filtering",
+        "category": "Numerical Schemes",
+        "explanation": (
+            "LSO statistical products require one fluid and are written by simulation MPI I/O and consumed by post-process. "
+            "Particle products support IBM markers, not particles_lagrange. "
+            "Closure reconstruction currently supports one calorically perfect ideal or stiffened gas."
         ),
     },
     # Feature Compatibility
@@ -909,6 +928,11 @@ class CaseValidator:
                 geometry == 2 and packing_method == 2,
                 f"particle_cloud({i}) hemisphere-shell lattice packing is not implemented",
             )
+            shell_axis = self.get(f"particle_cloud({i})%shell_axis", 3)
+            self.prohibit(
+                geometry == 2 and shell_axis not in [1, 2, 3],
+                f"particle_cloud({i})%shell_axis must be 1 (x), 2 (y), or 3 (z)",
+            )
             if geometry == 2 and shell_outer_radius is not None and self._is_numeric(shell_outer_radius):
                 x_centroid = self.get(f"particle_cloud({i})%x_centroid", None)
                 y_centroid = self.get(f"particle_cloud({i})%y_centroid", None)
@@ -919,32 +943,34 @@ class CaseValidator:
                 y_end = self.get("y_domain%end", None)
                 z_beg = self.get("z_domain%beg", None)
                 z_end = self.get("z_domain%end", None)
+                # 2D has no z-axis; shell_axis values other than 1 (x) fall back to y, matching the
+                # fixed +y orientation used before shell_axis existed (see s_sample_cloud_candidate).
+                open_axis = shell_axis if (p > 0 or shell_axis == 1) else 2
 
-                if all(self._is_numeric(v) for v in [x_centroid, x_beg, x_end]):
-                    self.prohibit(
-                        x_centroid - shell_outer_radius < x_beg or x_centroid + shell_outer_radius > x_end,
-                        f"particle_cloud({i}) hemisphere shell x-extent must lie within x_domain",
-                    )
-                if n > 0 and all(self._is_numeric(v) for v in [y_centroid, y_beg, y_end, radius]):
-                    if p > 0:
+                axes = [
+                    (1, "x", x_centroid, x_beg, x_end),
+                    (2, "y", y_centroid, y_beg, y_end),
+                    (3, "z", z_centroid, z_beg, z_end),
+                ]
+                for axis_id, name, centroid, beg, end in axes:
+                    if axis_id == 2 and n == 0:
+                        continue
+                    if axis_id == 3 and p == 0:
+                        continue
+                    if not all(self._is_numeric(v) for v in [centroid, beg, end, radius]):
+                        continue
+                    if axis_id == open_axis:
+                        # the flat face sits at the centroid and the shell opens toward +axis; require
+                        # one particle radius of standoff so no particle surface sits on the domain wall.
                         self.prohibit(
-                            y_centroid - shell_outer_radius < y_beg or y_centroid + shell_outer_radius > y_end,
-                            f"particle_cloud({i}) hemisphere shell y-extent must lie within y_domain",
+                            centroid - radius < beg or centroid + shell_outer_radius > end,
+                            f"particle_cloud({i}) hemisphere shell must clear {name}_domain by one particle radius",
                         )
                     else:
-                        # 2D half-annulus opens toward +y from the flat face at y_centroid; require one
-                        # particle radius of standoff so no particle surface sits on the domain wall.
                         self.prohibit(
-                            y_centroid - radius < y_beg or y_centroid + shell_outer_radius > y_end,
-                            f"particle_cloud({i}) half-annulus must clear y_domain by one particle radius",
+                            centroid - shell_outer_radius < beg or centroid + shell_outer_radius > end,
+                            f"particle_cloud({i}) hemisphere shell {name}-extent must lie within {name}_domain",
                         )
-                if p > 0 and all(self._is_numeric(v) for v in [z_centroid, z_beg, z_end, radius]):
-                    # 3D hemisphere shell opens toward +z from the flat face at z_centroid; require one
-                    # particle radius of standoff so no particle surface sits on the domain wall.
-                    self.prohibit(
-                        z_centroid - radius < z_beg or z_centroid + shell_outer_radius > z_end,
-                        f"particle_cloud({i}) hemisphere shell must clear z_domain by one particle radius",
-                    )
 
         num_ib_airfoils_max = get_fortran_constants().get("num_ib_airfoils_max", 5)
         num_stl_models_max = get_fortran_constants().get("num_stl_models_max", 10)
@@ -1116,8 +1142,16 @@ class CaseValidator:
             return
         # A temperature integrates from the reference state, so it needs T at rho0 as well as cv.
         rta = self.get("rburn%ta")
+        dynamic_ib = self.get("ib", "F") == "T" and (
+            any(self.get(f"patch_ib({j})%moving_ibm", 0) == 2 for j in range(1, (self.get("num_ibs") or 0) + 1))
+            or any(self.get(f"particle_cloud({j})%moving_ibm", 0) == 2 for j in range(1, (self.get("num_particle_clouds") or 0) + 1))
+        )
         for i, prefix in state_dependent.items():
-            if self.get("T_wrt", "F") == "T" or (i == 1 and self._is_numeric(rta) and rta > 0):
+            el_temperature = self.get("particles_lagrange", "F") == "T" and (self.get(f"lag_params%suth({i})", 0) or 0) > 0
+            needs_temperature = self.get("T_wrt", "F") == "T" or (i == 1 and self._is_numeric(rta) and rta > 0) or dynamic_ib or el_temperature
+            if needs_temperature:
+                cv = self.get(f"fluid_pp({i})%cv")
+                self.prohibit(cv is None or cv <= 0, f"the temperature of fluid {i} needs fluid_pp({i})%cv > 0")
                 t0 = self.get(f"fluid_pp({i})%{prefix}_t0")
                 self.prohibit(t0 is None or t0 <= 0, f"the temperature of fluid {i} needs fluid_pp({i})%{prefix}_t0 > 0")
         self._check_initial_states_inside_eos(num_fluids)
@@ -1128,7 +1162,7 @@ class CaseValidator:
         self.prohibit(self.get("wave_speeds") == 2, f"a state-dependent eos ({state_dependent_names}) requires wave_speeds = 1 (the PVRS estimate is stiffened-gas only)")
         for j in range(1, (self.get("num_patches") or 0) + 1):
             self.prohibit(self.get(f"patch_icpp({j})%hcid") in (202, 203), f"patch_icpp({j})%hcid = 202/203 read fluid_pp(1)%gamma, which a state-dependent eos does not set")
-        for flag in ("bubbles_euler", "bubbles_lagrange", "igr", "relativity", "mhd", "chemistry", "relax", "ib"):
+        for flag in ("bubbles_euler", "igr", "relativity", "mhd", "chemistry", "relax"):
             self.prohibit(self.get(flag, "F") == "T", f"a state-dependent eos ({state_dependent_names}) is not supported with {flag} = T")
 
     def check_stiffened_eos(self):
@@ -1461,53 +1495,58 @@ class CaseValidator:
         self.prohibit(weno_Re_flux and not viscous, "weno_Re_flux requires viscous to be enabled")
 
     def check_heat_conduction(self):
-        """Checks constraints on Fourier heat conduction parameters (fluid_pp(i)%k_therm)"""
-        num_fluids = self.get("num_fluids")
-        # If num_fluids is not set, check at least fluid 1 (for model_eqns=1)
-        if num_fluids is None:
-            num_fluids = 1
+        """Checks Fourier heat-conduction constraints."""
+        num_fluids = self.get("num_fluids") or 1
         model_eqns = self.get("model_eqns")
-        eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
-        supported_eos = {eos_names["stiffened_gas"], eos_names["ideal_gas"]}
-
-        # heat_conduction is derived (any fluid_pp(i)%k_therm > 0), not a case-file parameter --
-        # mirrors m_global_parameters_common.fpp: heat_conduction = any(fluid_pp(:)%k_therm > 0._wp).
-        heat_conduction = False
-        for i in range(1, num_fluids + 1):
-            k_therm = self.get(f"fluid_pp({i})%k_therm")
-            if k_therm is None:
-                continue
-            self.prohibit(k_therm < 0, f"fluid_pp({i})%k_therm must be non-negative")
-            if k_therm > 0:
-                heat_conduction = True
-                cv = self.get(f"fluid_pp({i})%cv")
-                self.prohibit(
-                    cv is None or cv <= 0,
-                    f"fluid_pp({i})%cv must be positive when fluid_pp({i})%k_therm is set: the mixture temperature is undefined without it",
-                )
-                eos = self.get(f"fluid_pp({i})%eos")
-                effective_eos = eos if eos is not None else eos_names["stiffened_gas"]
-                self.prohibit(effective_eos not in supported_eos, "heat conduction supports only the stiffened-gas and ideal-gas equations of state")
-                # model_eqns = 1 (gamma law) stores gamma/pi_inf, not a volume fraction, in the slots
-                # that m_conduction.fpp reads as alpha_i; only model_eqns = 2 (5-eq) and 3 (6-eq) carry one.
-                self.prohibit(
-                    model_eqns not in (2, 3),
-                    f"heat conduction requires model_eqns = 2 (5-equation) or model_eqns = 3 (6-equation): fluid_pp({i})%k_therm is weighted by a volume fraction that model_eqns = 1 does not carry",
-                )
-
         igr = self.get("igr", "F") == "T"
         chemistry = self.get("chemistry", "F") == "T"
-        # Load-bearing, not cosmetic: q_T_sf%sf is allocated only inside "if (.not. igr)" in
-        # m_time_steppers.fpp but deallocated unconditionally, so heat_conduction + igr would
-        # deallocate an unallocated field.
-        self.prohibit(heat_conduction and igr, "heat conduction is not supported with igr")
-        # Load-bearing, not cosmetic: with chemistry, m_rhs.fpp allocates the energy flux_src slot
-        # under chemistry and chem_params%diffusion and not viscous, which conduction also allocates
-        # when heat_conduction is on -- the combination double-allocates and aborts in the allocator.
-        # Chemistry also carries its own mixture-averaged conduction, so the physics would double-count.
+        eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
+        heat_conduction = False
+
+        for i in range(1, num_fluids + 1):
+            k_therm = self.get(f"fluid_pp({i})%k_therm", 0.0)
+            if not self._is_numeric(k_therm):
+                continue
+
+            self.prohibit(k_therm < 0.0, f"fluid_pp({i})%k_therm must be non-negative")
+            if k_therm <= 0.0:
+                continue
+
+            heat_conduction = True
+            cv = self.get(f"fluid_pp({i})%cv")
+            self.prohibit(
+                not self._is_numeric(cv) or cv <= 0.0,
+                f"fluid_pp({i})%cv must be positive when fluid_pp({i})%k_therm is set",
+            )
+            eos = self.get(f"fluid_pp({i})%eos", eos_names["stiffened_gas"])
+            self.prohibit(
+                eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]),
+                "heat conduction supports only the stiffened-gas and ideal-gas equations of state",
+            )
+
         self.prohibit(
-            heat_conduction and chemistry,
-            "heat conduction is not supported with chemistry: the reacting path already carries mixture-averaged conduction through chem_params%diffusion",
+            heat_conduction and model_eqns not in (2, 3),
+            "heat conduction requires model_eqns = 2 (5-equation) or model_eqns = 3 (6-equation)",
+        )
+        self.prohibit(heat_conduction and igr, "heat conduction is not supported with igr")
+        self.prohibit(heat_conduction and chemistry, "heat conduction is not supported with chemistry")
+
+    def check_el_particles(self):
+        """Check the Euler-Lagrange particle-model requirements."""
+        if self.get("particles_lagrange", "F") != "T":
+            return
+
+        self.prohibit(self.get("bubbles_lagrange", "F") == "T", "particles_lagrange and bubbles_lagrange cannot both be enabled")
+        self.prohibit(self.get("n", 0) == 0, "particles_lagrange requires at least 2D (n > 0)")
+        self.prohibit((self.get("lag_params%nParticles_glb") or 0) < 1, "lag_params%nParticles_glb must be positive")
+        self.prohibit(
+            self.get("lag_params%solver_approach") not in (1, 2),
+            "lag_params%solver_approach must be 1 (one-way) or 2 (two-way)",
+        )
+        self.prohibit(not self.get("lag_params%input_path"), "lag_params%input_path must name a particle input file")
+        self.prohibit(
+            (self.get("particle_pp%rho0ref_particle") or 0) <= 0,
+            "particle_pp%rho0ref_particle must be positive",
         )
 
     def check_non_newtonian(self):
@@ -1902,19 +1941,6 @@ class CaseValidator:
             if grcbc_in:
                 # Check if EITHER beg OR end is set to -7
                 self.prohibit(bc_beg != -7 and bc_end != -7, f"Subsonic Inflow (grcbc_in) requires bc_{dir}%beg = -7 or bc_{dir}%end = -7")
-                # The relaxation drives the boundary towards a prescribed state, so that state has to be given in
-                # full. An unset component keeps its default sentinel and the boundary diverges over a few hundred
-                # steps rather than failing outright, which is a hard failure to read backwards from an ICFL abort.
-                num_fluids = self.get("num_fluids", 1)
-                # s_initialize_cbc_module copies vel_in(1..num_dims) and the kernel reads them through
-                # dir_idx, which is (2,1,3) for a y inflow and (3,1,2) for z -- so requiring only
-                # component 1 would leave the normal velocity of a y or z inflow unchecked.
-                num_dims = 3 if (self.get("p", 0) or 0) > 0 else (2 if (self.get("n", 0) or 0) > 0 else 1)
-                missing = [n for n in (f"bc_{dir}%pres_in",) if self.get(n) is None]
-                missing += [f"bc_{dir}%vel_in({d})" for d in range(1, num_dims + 1) if self.get(f"bc_{dir}%vel_in({d})") is None]
-                missing += [f"bc_{dir}%alpha_rho_in({i})" for i in range(1, num_fluids + 1) if self.get(f"bc_{dir}%alpha_rho_in({i})") is None]
-                missing += [f"bc_{dir}%alpha_in({i})" for i in range(1, num_fluids + 1) if self.get(f"bc_{dir}%alpha_in({i})") is None]
-                self.prohibit(len(missing) > 0, f"Subsonic Inflow (grcbc_in) needs the full inflow state; missing {', '.join(missing)}")
             if grcbc_out:
                 # Check if EITHER beg OR end is set to -8
                 self.prohibit(bc_beg != -8 and bc_end != -8, f"Subsonic Outflow (grcbc_out) requires bc_{dir}%beg = -8 or bc_{dir}%end = -8")
@@ -2014,8 +2040,6 @@ class CaseValidator:
         m = self.get("m", 0)
         n = self.get("n", 0)
 
-        self.prohibit(file_per_process and not parallel_io, "file_per_process requires parallel_io = T")
-
         if down_sample:
             self.prohibit(not parallel_io, "down sample requires parallel_io = T")
             self.prohibit(not igr, "down sample requires igr = T")
@@ -2060,6 +2084,68 @@ class CaseValidator:
             self.prohibit(coord_b is None, f"{direction}_b must be set with stretch_{direction} enabled")
             if coord_a is not None and coord_b is not None:
                 self.prohibit(coord_a >= coord_b, f"{direction}_a must be less than {direction}_b with stretch_{direction} enabled")
+
+    def check_lso_filter(self, stage):
+        """Reject LSO configurations that otherwise produce missing or invalid output."""
+        enabled = any(self.get(key, "F") == "T" for key in ("lso_filter", "lso_filter_wrt", "lso_stat_wrt", "lso_pp_filter", "lso_closure_wrt"))
+        if not enabled:
+            return
+
+        lso_filter = self.get("lso_filter", "F") == "T"
+        filter_wrt = self.get("lso_filter_wrt", "F") == "T"
+        stat_wrt = self.get("lso_stat_wrt", "F") == "T"
+        pp_filter = self.get("lso_pp_filter", "F") == "T"
+        closure_wrt = self.get("lso_closure_wrt", "F") == "T"
+        parallel_io = self.get("parallel_io", "F") == "T"
+        sigma = self.get("filter_sigma")
+        factor = self.get("lso_down_sample_factor", 1) or 1
+        lso_R_gas = self.get("lso_R_gas", 287.0)
+        if lso_R_gas is None:
+            lso_R_gas = 287.0
+
+        self.prohibit(sigma is None or sigma <= 0, "LSO filtering requires filter_sigma > 0")
+        self.prohibit(any(self.get(f"stretch_{d}", "F") == "T" for d in "xyz"), "LSO filtering requires a uniform grid")
+        self.prohibit(factor < 1, "lso_down_sample_factor must be a positive integer")
+        if factor > 1:
+            for direction, key in (("x", "m"), ("y", "n"), ("z", "p")):
+                cells = self.get(key, 0)
+                if cells and (cells + 1) % factor != 0:
+                    self.prohibit(True, f"lso_down_sample_factor must divide {direction} cells + 1")
+        self.prohibit(filter_wrt and not lso_filter, "lso_filter_wrt = T requires lso_filter = T")
+        self.prohibit(stat_wrt and not filter_wrt, "lso_stat_wrt = T requires lso_filter_wrt = T")
+        self.prohibit(stat_wrt and not parallel_io, "LSO statistical output requires parallel_io = T")
+        self.prohibit(stat_wrt and self.get("num_fluids") != 1, "LSO statistics currently require num_fluids = 1")
+        self.prohibit(stat_wrt and self.get("particles_lagrange", "F") == "T", "LSO particle statistics support IBM markers, not particles_lagrange")
+        eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
+        eos = self.get("fluid_pp(1)%eos", eos_names["stiffened_gas"])
+        cv = self.get("fluid_pp(1)%cv")
+        self.prohibit(stat_wrt and lso_R_gas <= 0, "LSO statistics require lso_R_gas > 0")
+        self.prohibit(
+            stat_wrt and self.get("chemistry", "F") != "T" and eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]) and (cv is None or cv <= 0),
+            "LSO statistics with a state-dependent EOS require fluid_pp(1)%cv > 0",
+        )
+
+        if stage != "post_process":
+            return
+
+        if filter_wrt and factor > 1:
+            self.prohibit(not parallel_io or self.get("file_per_process", "F") == "T", "Downsampled LSO post-processing requires shared parallel_io files")
+            self.prohibit(self.get("down_sample", "F") == "T", "LSO downsampling cannot be combined with legacy down_sample")
+            self.prohibit(
+                (self.get("num_bc_patches", 0) or 0) > 0 or any(self.get(f"bc_{d}%{side}") == -17 for d in "xyz" for side in ("beg", "end")),
+                "Downsampled LSO post-processing does not support spatial boundary-condition files",
+            )
+            for key in ("m", "n", "p"):
+                cells = self.get(key, 0) or 0
+                self.prohibit(cells > 0 and (cells + 1) // factor < 2, "Downsampled LSO post-processing needs at least two cells per active direction")
+
+        self.prohibit(pp_filter and not filter_wrt, "lso_pp_filter = T requires lso_filter_wrt = T")
+        self.prohibit(pp_filter and self.get("ib", "F") == "T" and not parallel_io, "IBM LSO post-process filtering requires parallel_io = T")
+        self.prohibit(closure_wrt and not stat_wrt, "lso_closure_wrt = T requires lso_stat_wrt = T")
+        if closure_wrt:
+            self.prohibit(self.get("num_fluids") != 1, "LSO closures currently require num_fluids = 1")
+            self.prohibit(self.get("chemistry", "F") == "T", "LSO closures do not support chemistry")
+            self.prohibit(eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]), "LSO closures require a calorically perfect ideal or stiffened gas")
 
     def check_perturb_density(self):
         """Checks initial partial density perturbation constraints (pre-process)"""
@@ -2139,14 +2225,10 @@ class CaseValidator:
             "chem_params%reaction_substeps_max must be >= reaction_substeps when adap_substeps = T",
         )
 
-        # Isothermal walls need a heat-conduction path to evaluate the wall flux: either the reacting
-        # mixture-averaged one, or Fourier conduction via fluid_pp(i)%k_therm.
-        num_fluids_iso = self.get("num_fluids") or 1
-        conducts = any((self.get(f"fluid_pp({i})%k_therm") or 0) > 0 for i in range(1, num_fluids_iso + 1))
-        has_heat_path = (chemistry and diffusion) or conducts
-
         # Define what constitutes a wall (-15 for slip, -16 for no-slip)
         wall_bcs = [-15, -16]
+        fourier_conduction = any(self._is_numeric(self.get(f"fluid_pp({i})%k_therm", 0.0)) and self.get(f"fluid_pp({i})%k_therm", 0.0) > 0.0 for i in range(1, (self.get("num_fluids") or 1) + 1))
+        heat_path = fourier_conduction or (chemistry and diffusion)
 
         for dir in ["x", "y", "z"]:
             isothermal_in = self.get(f"bc_{dir}%isothermal_in", "F") == "T"
@@ -2155,11 +2237,9 @@ class CaseValidator:
             bc_end = self.get(f"bc_{dir}%end")
 
             if isothermal_in:
-                # Prohibit isothermal boundaries without a heat-conduction path to evaluate the wall flux
                 self.prohibit(
-                    not has_heat_path,
-                    f"Isothermal In (bc_{dir}%isothermal_in) requires a heat-conduction path: either chemistry='T' with "
-                    "chem_params%diffusion='T', or Fourier conduction via fluid_pp(i)%k_therm > 0.",
+                    not heat_path,
+                    f"Isothermal In (bc_{dir}%isothermal_in) requires a heat-conduction path: set fluid_pp(i)%k_therm > 0 or enable chemistry with chem_params%diffusion = T.",
                 )
 
                 # Prohibit if neither beg nor end is set to a valid wall condition
@@ -2172,11 +2252,9 @@ class CaseValidator:
                     self.prohibit(tw_in <= 0.0, f"Wall temperature bc_{dir}%Twall_in must be strictly positive for thermodynamics (got {tw_in}).")
 
             if isothermal_out:
-                # Prohibit isothermal boundaries without a heat-conduction path to evaluate the wall flux
                 self.prohibit(
-                    not has_heat_path,
-                    f"Isothermal Out (bc_{dir}%isothermal_out) requires a heat-conduction path: either chemistry='T' with "
-                    "chem_params%diffusion='T', or Fourier conduction via fluid_pp(i)%k_therm > 0.",
+                    not heat_path,
+                    f"Isothermal Out (bc_{dir}%isothermal_out) requires a heat-conduction path: set fluid_pp(i)%k_therm > 0 or enable chemistry with chem_params%diffusion = T.",
                 )
 
                 # Prohibit if neither beg nor end is set to a valid wall condition
@@ -2327,6 +2405,13 @@ class CaseValidator:
                     alpha_rho = self.get(f"patch_icpp({i})%alpha_rho({j})")
                     if alpha_rho is not None and self._is_numeric(alpha_rho):
                         self.prohibit(alpha_rho < 0, f"patch_icpp({istr})%alpha_rho({jstr}) must be non-negative (got {alpha_rho})")
+
+                # JWL++ reaction progress
+                jwl_reactive = self.get("jwl_reactive", "F") == "T"
+                rxn_val = self.get(f"patch_icpp({i})%rxn_val")
+                if rxn_val is not None and self._is_numeric(rxn_val):
+                    self.prohibit(rxn_val != 0 and not jwl_reactive, f"patch_icpp({istr})%rxn_val requires jwl_reactive")
+                    self.prohibit(rxn_val < 0 or rxn_val > 1, f"patch_icpp({istr})%rxn_val must be in [0, 1] (got {rxn_val})")
 
             # GEOMETRY
             # Patch dimensions must be positive (except in cylindrical coords where
@@ -2990,12 +3075,15 @@ class CaseValidator:
         self.check_eos_parameter_sanity()
         self.check_surface_tension()
         self.check_mhd()
+        self.check_heat_conduction()
+        self.check_el_particles()
         self.check_chemistry()
         self.check_reactive_burn()
 
     def validate_simulation(self):
         """Validate simulation-specific parameters"""
         self.validate_common()
+        self.check_lso_filter("simulation")
         self.check_geometry_precision_simulation()
         self.check_finite_difference()
         self.check_time_stepping()
@@ -3008,7 +3096,6 @@ class CaseValidator:
         self.check_body_forces()
         self.check_synthetic_turbulence()
         self.check_viscosity()
-        self.check_heat_conduction()
         self.check_non_newtonian()
         self.check_mhd_simulation()
         self.check_igr_simulation()
@@ -3023,6 +3110,7 @@ class CaseValidator:
     def validate_pre_process(self):
         """Validate pre-process-specific parameters"""
         self.validate_common()
+        self.check_lso_filter("pre_process")
         self.check_restart()
         self.check_domain_extents()
         self.check_qbmm_pre_process()
@@ -3041,6 +3129,7 @@ class CaseValidator:
     def validate_post_process(self):
         """Validate post-process-specific parameters"""
         self.validate_common()
+        self.check_lso_filter("post_process")
         self.check_finite_difference()
         self.check_time_stepping()
         self.check_output_format()

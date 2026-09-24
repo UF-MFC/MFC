@@ -11,13 +11,29 @@ module m_checker
     use m_global_parameters
     use m_mpi_proxy
     use m_helper
-    use m_constants, only: recon_type_weno, recon_type_muscl
+    use m_constants, only: recon_type_weno, recon_type_muscl, eos_stiffened_gas, eos_ideal_gas
 
     implicit none
 
-    private; public :: s_check_inputs
+    private; public :: s_check_inputs, s_check_lso_decomposition
 
 contains
+
+    !> Coarse file views require each rank to own whole, globally aligned stride blocks.
+    impure subroutine s_check_lso_decomposition()
+
+        integer               :: i
+        integer, dimension(3) :: cells
+
+        if (.not. lso_filter_wrt .or. lso_down_sample_factor <= 1) return
+        cells = [m + 1, n + 1, p + 1]
+        do i = 1, num_dims
+            ! lint: runtime-check local extents exist only after MPI decomposition; divisible extents also align rank starts
+            @:PROHIBIT(mod(cells(i), lso_down_sample_factor) /= 0, &
+                       & "LSO downsampling requires per-rank cells divisible by lso_down_sample_factor; change grid or rank count")
+        end do
+
+    end subroutine s_check_lso_decomposition
 
     !> Checks compatibility of parameters in the input file. Used by the simulation stage
     impure subroutine s_check_inputs

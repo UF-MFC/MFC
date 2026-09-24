@@ -392,7 +392,7 @@ Per-fluid Herschel-Bulkley rheology with Papanastasiou regularization (\cite Pap
 
 \f[\mu_{\rm eff}(\dot\gamma) = \frac{\tau_0}{\dot\gamma}\left(1 - e^{-m\,\dot\gamma}\right) + K\,\dot\gamma^{\,n-1}, \qquad \dot\gamma = \sqrt{2\,\mathbf{D}:\mathbf{D}}\f]
 
-This covers power-law shear-thinning/thickening (\f$\tau_0 = 0\f$), Bingham plastic (\f$n = 1,\ \tau_0 > 0\f$), and general Herschel-Bulkley yield-stress fluids. The mixture rule above applies with \f$1/\text{Re}_j = \mu_{{\rm eff},j}\f$ evaluated at the local shear rate; Newtonian and non-Newtonian fluids can be mixed. Supported with the HLL and HLLC Riemann solvers, including immersed boundaries. See @ref sec-non-newtonian "the case documentation" for parameters, constraints, and validated example cases.
+This covers power-law shear-thinning/thickening (\f$\tau_0 = 0\f$), Bingham plastic (\f$n = 1,\ \tau_0 > 0\f$), and general Herschel-Bulkley yield-stress fluids. The mixture rule above applies with \f$1/\text{Re}_j = \mu_{{\rm eff},j}\f$ evaluated at the local shear rate; Newtonian and non-Newtonian fluids can be mixed. Supported with the HLL and HLLC Riemann solvers, including immersed boundaries.
 
 ---
 

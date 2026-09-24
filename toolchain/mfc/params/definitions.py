@@ -42,6 +42,348 @@ NP = 10  # patch_icpp: has per-index variations, can't easily be IndexedFamily
 NA = 4  # acoustic sources: enumerated individually
 
 
+# Auto-generated Descriptions
+# Descriptions are auto-generated from parameter names using naming conventions.
+# Override with explicit desc= parameter when auto-generation is inadequate.
+
+# Prefix descriptions for indexed parameter families
+_PREFIX_DESCS = {
+    "patch_icpp": "initial condition patch",
+    "patch_ib": "immersed boundary",
+    "patch_bc": "boundary condition patch",
+    "fluid_pp": "fluid",
+    "acoustic": "acoustic source",
+    "probe": "probe",
+    "integral": "integral region",
+}
+
+# Attribute descriptions (suffix after %)
+_ATTR_DESCS = {
+    # Geometry/position
+    "geometry": "Geometry type",
+    "x_centroid": "X-coordinate of centroid",
+    "y_centroid": "Y-coordinate of centroid",
+    "z_centroid": "Z-coordinate of centroid",
+    "length_x": "X-dimension length",
+    "length_y": "Y-dimension length",
+    "length_z": "Z-dimension length",
+    "radius": "Radius",
+    "radii": "Radii array",
+    "normal": "Normal direction",
+    "theta": "Theta angle",
+    "angles": "Orientation angles",
+    # Physics
+    "vel": "Velocity",
+    "pres": "Pressure",
+    "rho": "Density",
+    "alpha": "Volume fraction",
+    "alpha_rho": "Partial density",
+    "gamma": "Specific heat ratio",
+    "pi_inf": "Stiffness pressure",
+    "cv": "Specific heat (const. volume)",
+    "qv": "Heat of formation",
+    "qvp": "Heat of formation prime",
+    "G": "Shear modulus",
+    "Re": "Reynolds number",
+    "mul0": "Reference viscosity",
+    "ss": "Surface tension",
+    "pv": "Vapor pressure",
+    # MHD
+    "Bx": "Magnetic field (x-component)",
+    "By": "Magnetic field (y-component)",
+    "Bz": "Magnetic field (z-component)",
+    # Model/smoothing
+    "smoothen": "Enable smoothing",
+    "smooth_patch_id": "Patch ID to smooth against",
+    "smooth_coeff": "Smoothing coefficient",
+    "alter_patch": "Alter with another patch",
+    "model_filepath": "STL model file path",
+    "model_spc": "Model spacing",
+    "model_threshold": "Model threshold",
+    "model_translate": "Model translation",
+    "model_scale": "Model scale",
+    "model_rotate": "Model rotation",
+    # Bubbles
+    "r0": "Initial bubble radius",
+    "v0": "Initial bubble velocity",
+    "p0": "Initial bubble pressure",
+    "m0": "Initial bubble mass",
+    # IB specific
+    "slip": "Enable slip condition",
+    "moving_ibm": "Enable moving boundary",
+    "angular_vel": "Angular velocity",
+    "mass": "Mass",
+    # BC specific
+    "vel_in": "Inlet velocity",
+    "vel_out": "Outlet velocity",
+    "alpha_rho_in": "Inlet partial density",
+    "alpha_in": "Inlet volume fraction",
+    "pres_in": "Inlet pressure",
+    "pres_out": "Outlet pressure",
+    "grcbc_in": "Enable GRCBC inlet",
+    "grcbc_out": "Enable GRCBC outlet",
+    "grcbc_vel_out": "Enable GRCBC velocity outlet",
+    "isothermal_in": "Enable isothermal wall at the domain entrance (minimum coordinate)",
+    "isothermal_out": "Enable isothermal wall at the domain exit (maximum coordinate)",
+    # Acoustic
+    "loc": "Location",
+    "mag": "Magnitude",
+    "pulse": "Pulse type",
+    "support": "Support type",
+    "frequency": "Frequency",
+    "wavelength": "Wavelength",
+    "length": "Length",
+    "height": "Height",
+    "delay": "Delay time",
+    "dipole": "Enable dipole",
+    "dir": "Direction",
+    # Output
+    "x": "X-coordinate",
+    "y": "Y-coordinate",
+    "z": "Z-coordinate",
+    "xmin": "X minimum",
+    "xmax": "X maximum",
+    "ymin": "Y minimum",
+    "ymax": "Y maximum",
+    "zmin": "Z minimum",
+    "zmax": "Z maximum",
+    # Chemistry
+    "Y": "Species mass fraction",
+    # Shape coefficients
+    "a": "Shape coefficient",
+    # Elasticity
+    "tau_e": "Elastic stress component",
+    # Misc
+    "cf_val": "Color function value",
+    "hcid": "Hard-coded ID",
+    "epsilon": "Interface thickness",
+    "beta": "Shape parameter beta",
+    "non_axis_sym": "Non-axisymmetric parameter",
+}
+
+# Simple parameter descriptions (non-indexed)
+_SIMPLE_DESCS = {
+    # Grid
+    "m": "Grid cells in x-direction",
+    "n": "Grid cells in y-direction",
+    "p": "Grid cells in z-direction",
+    "cyl_coord": "Enable cylindrical coordinates",
+    "stretch_x": "Enable grid stretching in x",
+    "stretch_y": "Enable grid stretching in y",
+    "stretch_z": "Enable grid stretching in z",
+    "a_x": "Grid stretching rate in x",
+    "a_y": "Grid stretching rate in y",
+    "a_z": "Grid stretching rate in z",
+    "x_a": "Stretching start (negative x)",
+    "x_b": "Stretching start (positive x)",
+    "y_a": "Stretching start (negative y)",
+    "y_b": "Stretching start (positive y)",
+    "z_a": "Stretching start (negative z)",
+    "z_b": "Stretching start (positive z)",
+    "loops_x": "Stretching iterations in x",
+    "loops_y": "Stretching iterations in y",
+    "loops_z": "Stretching iterations in z",
+    # Time
+    "dt": "Time step size",
+    "t_step_start": "Starting time step",
+    "t_step_stop": "Ending time step",
+    "t_step_save": "Save interval (steps)",
+    "t_step_print": "Print interval (steps)",
+    "t_stop": "Stop time",
+    "t_save": "Save interval (time)",
+    "time_stepper": "Time integration scheme",
+    "cfl_target": "Target CFL number",
+    "cfl_adap_dt": "Enable adaptive CFL time stepping",
+    "cfl_const_dt": "Use constant CFL time stepping",
+    "cfl_dt": "Enable CFL-based time stepping",
+    "adap_dt": "Enable adaptive time stepping",
+    "adap_dt_tol": "Adaptive time stepping tolerance",
+    "adap_dt_max_iters": "Max iterations for adaptive dt",
+    # Model
+    "model_eqns": "Model equations",
+    "num_fluids": "Number of fluids",
+    "num_patches": "Number of IC patches",
+    "mpp_lim": "Mixture pressure positivity limiter",
+    # WENO
+    "weno_order": "WENO reconstruction order",
+    "weno_eps": "WENO epsilon parameter",
+    "mapped_weno": "Enable mapped WENO",
+    "wenoz": "Enable WENO-Z",
+    "teno": "Enable TENO",
+    "mp_weno": "Enable monotonicity-preserving WENO",
+    # Riemann
+    "riemann_solver": "Riemann solver",
+    "wave_speeds": "Wave speed estimate method",
+    "avg_state": "Average state",
+    # Physics toggles
+    "viscous": "Enable viscous effects",
+    "mhd": "Enable magnetohydrodynamics",
+    "hyper_cleaning": "Enable hyperbolic divergence cleaning",
+    "hyper_cleaning_speed": "Divergence cleaning wave speed",
+    "hyper_cleaning_tau": "Divergence cleaning damping time",
+    "bubbles_euler": "Enable Euler bubble model",
+    "bubbles_lagrange": "Enable Lagrangian bubbles",
+    "polytropic": "Enable polytropic gas",
+    "polydisperse": "Enable polydisperse bubbles",
+    "qbmm": "Enable QBMM",
+    "chemistry": "Enable chemistry",
+    "surface_tension": "Enable surface tension",
+    "hypoelasticity": "Enable hypoelastic model",
+    "hyperelasticity": "Enable hyperelastic model",
+    "relativity": "Enable special relativity",
+    "ib": "Enable immersed boundaries",
+    "collision_model": "Collision model for immersed boundaries (0=none, 1=soft sphere)",
+    "coefficient_of_restitution": "Coefficient of restitution for IB collisions",
+    "collision_time": "Characteristic collision time for IB collisions",
+    "ib_coefficient_of_friction": "Coefficient of friction for IB collisions",
+    # LSO variable-weight filter
+    "lso_filter": "Enable LSO variable-weight Gaussian filter (applied at save steps)",
+    "lso_filter_wrt": "Write LSO-filtered fields",
+    "lso_down_sample_factor": "Coarsening stride for LSO-filtered output",
+    "lso_stat_wrt": "Write LSO statistical products",
+    "lso_R_gas": "Specific gas constant used by LSO statistical products",
+    "lso_mu": "Dynamic viscosity used by LSO statistical products",
+    "lso_filter_sigma_in": "Gaussian sigma already applied to post-process input",
+    "lso_filter_sigma_target": "Target Gaussian sigma for post-process widening",
+    "lso_pp2_n_passes_x": "Number of stage-2 post-process filter passes in x",
+    "lso_pp2_n_passes_y": "Number of stage-2 post-process filter passes in y",
+    "lso_pp2_n_passes_z": "Number of stage-2 post-process filter passes in z",
+    "lso_pp2_a_x": "Stage-2 post-process per-pass stencil coefficients in x",
+    "lso_pp2_a_y": "Stage-2 post-process per-pass stencil coefficients in y",
+    "lso_pp2_a_z": "Stage-2 post-process per-pass stencil coefficients in z",
+    "filter_sigma": "Target Gaussian filter standard deviation (physical units, same as domain coordinates)",
+    "acoustic_source": "Enable acoustic sources",
+    # Output
+    "parallel_io": "Enable parallel I/O",
+    "probe_wrt": "Write probe data",
+    "prim_vars_wrt": "Write primitive variables",
+    "cons_vars_wrt": "Write conservative variables",
+    "run_time_info": "Print runtime info",
+    "ib_state_wrt": "Write IB state and load data",
+    # Misc
+    "case_dir": "Case directory path",
+    "cantera_file": "Cantera mechanism file",
+    "num_ibs": "Number of immersed boundaries",
+    "num_source": "Number of acoustic sources",
+    "num_probes": "Number of probes",
+    "num_integrals": "Number of integral regions",
+    "nb": "Number of bubble bins",
+    "R0ref": "Reference bubble radius",
+    "sigma": "Surface tension coefficient",
+    "Bx0": "Background magnetic field (x)",
+    "old_grid": "Load grid from previous simulation",
+    "old_ic": "Load initial conditions from previous",
+    "t_step_old": "Time step to restart from",
+    "fd_order": "Finite difference order",
+    "recon_type": "Reconstruction type",
+    "muscl_order": "MUSCL reconstruction order",
+    "muscl_lim": "MUSCL limiter type",
+    "muscl_eps": "MUSCL limiter slope-product threshold",
+    "low_Mach": "Low Mach number correction",
+    "bubble_model": "Bubble dynamics model",
+    "Ca": "Cavitation number",
+    "Web": "Weber number",
+    "Re_inv": "Inverse Reynolds number",
+    "format": "Output format",
+    "precision": "Output precision",
+    # Body forces
+    "bf_x": "Enable body force in x",
+    "bf_y": "Enable body force in y",
+    "bf_z": "Enable body force in z",
+    "k_x": "Body force wavenumber in x",
+    "k_y": "Body force wavenumber in y",
+    "k_z": "Body force wavenumber in z",
+    "w_x": "Body force frequency in x",
+    "w_y": "Body force frequency in y",
+    "w_z": "Body force frequency in z",
+    "p_x": "Body force phase in x",
+    "p_y": "Body force phase in y",
+    "p_z": "Body force phase in z",
+    "g_x": "Gravitational acceleration in x",
+    "g_y": "Gravitational acceleration in y",
+    "g_z": "Gravitational acceleration in z",
+    # More output
+    "E_wrt": "Write energy field",
+    "c_wrt": "Write sound speed field",
+    "rho_wrt": "Write density field",
+    "pres_wrt": "Write pressure field",
+    "schlieren_wrt": "Write schlieren images",
+    "cf_wrt": "Write color function",
+    "omega_wrt": "Write vorticity",
+    "qm_wrt": "Write Q-criterion",
+    "liutex_wrt": "Write Liutex vortex field",
+    "gamma_wrt": "Write gamma field",
+    "heat_ratio_wrt": "Write heat capacity ratio",
+    "pi_inf_wrt": "Write pi_inf field",
+    "pres_inf_wrt": "Write reference pressure",
+    "fft_wrt": "Write FFT output",
+    "chem_wrt_T": "Write temperature (chemistry)",
+    # Misc physics
+    "alt_soundspeed": "Alternative sound speed formulation",
+    "mixture_err": "Enable mixture error checking",
+    "cont_damage": "Enable continuum damage model",
+}
+
+
+def _auto_describe(name: str) -> str:
+    """Auto-generate description from parameter name."""
+    # Check simple params first
+    if name in _SIMPLE_DESCS:
+        return _SIMPLE_DESCS[name]
+
+    # Handle indexed params: prefix(N)%attr or prefix(N)%attr(M)
+    match = re.match(r"([a-z_]+)\((\d+)\)%(.+)", name)
+    if match:
+        prefix, idx, attr = match.group(1), match.group(2), match.group(3)
+        prefix_desc = _PREFIX_DESCS.get(prefix, prefix.replace("_", " "))
+
+        # Check for nested index: attr(M) or attr(M, K)
+        attr_match = re.match(r"([a-z_]+)\((\d+)(?:,\s*(\d+))?\)", attr)
+        if attr_match:
+            attr_base = attr_match.group(1)
+            idx2 = attr_match.group(2)
+            attr_desc = _ATTR_DESCS.get(attr_base, attr_base.replace("_", " "))
+            return f"{attr_desc} {idx2} for {prefix_desc} {idx}"
+
+        attr_desc = _ATTR_DESCS.get(attr, attr.replace("_", " "))
+        return f"{attr_desc} for {prefix_desc} {idx}"
+
+    # Handle bc_x%attr style (no index in prefix)
+    if "%" in name:
+        prefix, attr = name.split("%", 1)
+        # Check for indexed attr
+        attr_match = re.match(r"([a-z_]+)\((\d+)\)", attr)
+        if attr_match:
+            attr_base, idx = attr_match.group(1), attr_match.group(2)
+            attr_desc = _ATTR_DESCS.get(attr_base, attr_base.replace("_", " "))
+            return f"{attr_desc} {idx} for {prefix.replace('_', ' ')}"
+
+        attr_desc = _ATTR_DESCS.get(attr, "")
+        if attr_desc:
+            return f"{attr_desc} for {prefix.replace('_', ' ')}"
+        # Fallback: just clean up the name
+        return f"{attr.replace('_', ' ').title()} for {prefix.replace('_', ' ')}"
+
+    # Handle suffix-indexed: name(N) or name(N, M)
+    match = re.match(r"([a-z_]+)\((\d+)(?:,\s*(\d+))?\)", name)
+    if match:
+        base, idx = match.group(1), match.group(2)
+        # Handle _wrt patterns
+        if base.endswith("_wrt"):
+            field = base[:-4].replace("_", " ")
+            return f"Write {field} for component {idx}"
+        return f"{base.replace('_', ' ').title()} {idx}"
+
+    # Fallback patterns
+    if name.endswith("_wrt"):
+        return f"Write {name[:-4].replace('_', ' ')}"
+    if name.startswith("num_"):
+        return f"Number of {name[4:].replace('_', ' ')}"
+
+    # Last resort: clean up the name
+    return name.replace("_", " ").replace("%", " ")
+
+
 # Parameters that can be hard-coded for GPU case optimization
 CASE_OPT_PARAMS = {
     "mapped_weno",
@@ -652,6 +994,11 @@ def _load():
     for n in ["polytropic", "bubbles_euler", "polydisperse", "qbmm", "bubbles_lagrange"]:
         _r(n, LOG, {"bubbles"})
 
+    # Subgrid solid particles (Euler-Lagrange)
+    _r("particles_lagrange", LOG, {"particles"})
+    for a in ["rho0ref_particle", "cp_particle", "ksp_col", "nu_col", "E_col", "cor_col"]:
+        _r(f"particle_pp%{a}", REAL, {"particles"})
+
     # Viscosity
     _r("viscous", LOG, {"viscosity"})
 
@@ -665,6 +1012,19 @@ def _load():
     # Surface tension
     _r("sigma", REAL, {"surface_tension"}, math=r"\f$\sigma\f$")
     _r("surface_tension", LOG, {"surface_tension"})
+
+    # JWL reaction and diagnostic controls
+    _r("jwl_wrt", LOG, desc="Write JWL temperature, product fraction, and reaction progress")
+    _r("jwl_afterburn", LOG, desc="Enable JWL afterburn energy release")
+    _r("jwl_ab_model", INT, desc="JWL afterburn rate model")
+    for n in ["jwl_q_ab", "jwl_ab_tau", "jwl_ab_A", "jwl_ab_theta", "jwl_ab_n"]:
+        _r(n, REAL)
+    _r("jwl_reactive", LOG, desc="Enable JWL++ pressure-driven reactive burn")
+    for n in ["jwl_G", "jwl_b_exp"]:
+        _r(n, REAL)
+    _r("prog_burn", LOG, desc="Enable kinematic JWL program burn")
+    for n in ["pb_D_cj", "pb_width", "pb_x_det", "pb_y_det", "pb_z_det", "pb_t_det"]:
+        _r(n, REAL)
 
     # Chemistry
     _r("cantera_file", STR, {"chemistry"})
@@ -703,6 +1063,35 @@ def _load():
     _r("ib_force_stride", INT, {"output", "ib"})
     for n in ["parallel_io", "file_per_process", "run_time_info", "prim_vars_wrt", "cons_vars_wrt", "fft_wrt", "ib_state_wrt", "ib_force_wrt"]:
         _r(n, LOG, {"output"})
+
+    # LSO variable-weight filter
+    _r("lso_filter", LOG, {"filter"})
+    _r("lso_filter_wrt", LOG, {"filter"})
+    _r("filter_sigma", REAL, {"filter"})
+    _r("lso_filter_sigma_in", REAL, {"filter"})
+    _r("lso_filter_sigma_target", REAL, {"filter"})
+    _r("lso_down_sample_factor", INT, {"filter"})
+    _r("lso_stat_wrt", LOG, {"filter"})
+    _r("lso_R_gas", REAL, {"filter"})
+    _r("lso_mu", REAL, {"filter"})
+    for n in ["lso_n_passes_x", "lso_n_passes_y", "lso_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_a_x", "lso_a_y", "lso_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
+    for n in ["lso2_n_passes_x", "lso2_n_passes_y", "lso2_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso2_a_x", "lso2_a_y", "lso2_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
+    _r("lso_pp_filter", LOG, {"filter"})
+    _r("lso_closure_wrt", LOG, {"filter"})
+    for n in ["lso_pp_n_passes_x", "lso_pp_n_passes_y", "lso_pp_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_pp_a_x", "lso_pp_a_y", "lso_pp_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
+    for n in ["lso_pp2_n_passes_x", "lso_pp2_n_passes_y", "lso_pp2_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_pp2_a_x", "lso_pp2_a_y", "lso_pp2_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
     for n in [
         "schlieren_wrt",
         "alpha_wrt",
@@ -887,6 +1276,7 @@ def _load():
             _r(f"{px}a({j})", REAL)
         _r(f"{px}pres", A_REAL, math=r"\f$p\f$")
         _r(f"{px}cf_val", A_REAL)
+        _r(f"{px}rxn_val", A_REAL)
         # MHD fields
         for a, sym in [("Bx", r"\f$B_x\f$"), ("By", r"\f$B_y\f$"), ("Bz", r"\f$B_z\f$")]:
             _r(f"{px}{a}", A_REAL, {"mhd"}, math=sym)
@@ -1057,6 +1447,7 @@ def _load():
     _pb_attrs["moving_ibm"] = (INT, _pb_tags)
     _pb_attrs["seed"] = (INT, _pb_tags)
     _pb_attrs["cloud_geometry"] = (INT, _pb_tags)
+    _pb_attrs["shell_axis"] = (INT, _pb_tags)
     _pb_attrs["packing_method"] = (INT, _pb_tags)
     _pb_attrs["periodic"] = (INT, _pb_tags)
     REGISTRY.register_family(
@@ -1152,13 +1543,26 @@ def _load():
     # gravity_force, nBubs_glb, epsilonb, charwidth, valmaxvoid. T0/Thost/c0/rho0/x0
     # were removed from the Fortran type by upstream #1085/#1093 — they must NOT be
     # registered (namelist read would crash).
-    for a in ["heatTransfer_model", "massTransfer_model", "pressure_corrector", "write_bubbles", "write_bubbles_stats", "pressure_force", "gravity_force", "write_void_evol", "kahan_summation"]:
+    for a in ["heatTransfer_model", "massTransfer_model", "pressure_corrector", "kahan_summation"]:
         _r(f"lag_params%{a}", LOG, {"bubbles"})
-    for a in ["solver_approach", "cluster_type", "smooth_type", "nBubs_glb", "drag_model", "vel_model", "charNz"]:
+    for a in ["cluster_type", "smooth_type", "nBubs_glb"]:
         _r(f"lag_params%{a}", INT, {"bubbles"})
+    _r("lag_params%charNz", INT, {"bubbles", "particles"})
+    _r("lag_params%solver_approach", INT, {"bubbles", "particles"})
     for a in ["epsilonb", "valmaxvoid", "charwidth"]:
         _r(f"lag_params%{a}", REAL, {"bubbles"})
-    _r("lag_params%input_path", STR, {"bubbles"})
+    for a in ["vel_model", "drag_model"]:
+        _r(f"lag_params%{a}", INT, {"bubbles", "particles"})
+    for a in ["write_bubbles", "write_bubbles_stats", "write_void_evol", "pressure_force", "gravity_force"]:
+        _r(f"lag_params%{a}", LOG, {"bubbles", "particles"})
+    _r("lag_params%input_path", STR, {"bubbles", "particles"})
+    for a in ["nParticles_glb", "qs_drag_model", "stokes_drag", "added_mass_model", "interpolation_order", "N_collision_subcycles"]:
+        _r(f"lag_params%{a}", INT, {"particles"})
+    for a in ["collision_force", "subcycle_collisions", "qs_fluct_force"]:
+        _r(f"lag_params%{a}", LOG, {"particles"})
+    for f in range(1, NF + 1):
+        _r(f"lag_params%mu_ref({f})", REAL, {"particles"})
+        _r(f"lag_params%suth({f})", REAL, {"particles"})
 
     # chem_params
     for a in ["diffusion", "reactions", "adap_substeps"]:
@@ -1236,6 +1640,18 @@ FORTRAN_ARRAY_DIMS: dict[str, str] = {
     "mom_wrt": "3",
     "omega_wrt": "3",
     "vel_wrt": "3",
+    "lso_a_x": "5, 60",
+    "lso_a_y": "5, 60",
+    "lso_a_z": "5, 60",
+    "lso2_a_x": "5, 60",
+    "lso2_a_y": "5, 60",
+    "lso2_a_z": "5, 60",
+    "lso_pp_a_x": "5, 60",
+    "lso_pp_a_y": "5, 60",
+    "lso_pp_a_z": "5, 60",
+    "lso_pp2_a_x": "5, 60",
+    "lso_pp2_a_y": "5, 60",
+    "lso_pp2_a_z": "5, 60",
 }
 
 # Derived-type namelist variables whose Fortran declarations come from generated_decls.fpp.
@@ -1247,6 +1663,7 @@ FORTRAN_ARRAY_DIMS: dict[str, str] = {
 TYPED_DECLS: dict[str, tuple] = {
     "fluid_pp": ("type(physical_parameters)", "num_fluids_max", False, "Per-fluid stiffened-gas EOS parameters, Reynolds numbers, and shear modulus"),
     "bub_pp": ("type(subgrid_bubble_physical_parameters)", None, False, "Subgrid bubble physical parameters"),
+    "particle_pp": ("type(subgrid_particle_physical_parameters)", None, False, "Subgrid solid-particle physical parameters"),
     "patch_icpp": ("type(ic_patch_parameters)", "num_patches_max", False, "IC patch parameters"),
     "patch_bc": ("type(bc_patch_parameters)", "num_bc_patches_max", False, "Boundary condition patch parameters"),
     "patch_ib": ("type(ib_patch_parameters)", "num_ib_patches_max_namelist", True, "Immersed boundary patch parameters"),
@@ -1329,6 +1746,8 @@ _nv(
     "adv_n",
     "hypoelasticity",
     "surface_tension",
+    "jwl_afterburn",
+    "jwl_reactive",
     "relativity",
     "ib",
     "num_ibs",
@@ -1361,6 +1780,78 @@ _nv(
     _ALL,
     "num_particle_clouds",
     "particle_cloud",
+)
+_nv(
+    _SIM_POST,
+    "lso_filter",
+    "lso_filter_wrt",
+    "filter_sigma",
+    "lso_down_sample_factor",
+    "lso_stat_wrt",
+    "lso_R_gas",
+    "lso_mu",
+    "lso_pp_filter",
+    "lso_closure_wrt",
+    "lso_n_passes_x",
+    "lso_n_passes_y",
+    "lso_n_passes_z",
+    "lso_a_x",
+    "lso_a_y",
+    "lso_a_z",
+    "lso2_n_passes_x",
+    "lso2_n_passes_y",
+    "lso2_n_passes_z",
+    "lso2_a_x",
+    "lso2_a_y",
+    "lso2_a_z",
+    "lso_pp_n_passes_x",
+    "lso_pp_n_passes_y",
+    "lso_pp_n_passes_z",
+    "lso_pp_a_x",
+    "lso_pp_a_y",
+    "lso_pp_a_z",
+    "lso_pp2_n_passes_x",
+    "lso_pp2_n_passes_y",
+    "lso_pp2_n_passes_z",
+    "lso_pp2_a_x",
+    "lso_pp2_a_y",
+    "lso_pp2_a_z",
+)
+_decl(
+    _POST,
+    "lso_filter",
+    "lso_filter_wrt",
+    "filter_sigma",
+    "lso_down_sample_factor",
+    "lso_stat_wrt",
+    "lso_R_gas",
+    "lso_mu",
+    "lso_pp_filter",
+    "lso_closure_wrt",
+    "lso_n_passes_x",
+    "lso_n_passes_y",
+    "lso_n_passes_z",
+    "lso_a_x",
+    "lso_a_y",
+    "lso_a_z",
+    "lso2_n_passes_x",
+    "lso2_n_passes_y",
+    "lso2_n_passes_z",
+    "lso2_a_x",
+    "lso2_a_y",
+    "lso2_a_z",
+    "lso_pp_n_passes_x",
+    "lso_pp_n_passes_y",
+    "lso_pp_n_passes_z",
+    "lso_pp_a_x",
+    "lso_pp_a_y",
+    "lso_pp_a_z",
+    "lso_pp2_n_passes_x",
+    "lso_pp2_n_passes_y",
+    "lso_pp2_n_passes_z",
+    "lso_pp2_a_x",
+    "lso_pp2_a_y",
+    "lso_pp2_a_z",
 )
 _nv(
     _PRE_SIM,
@@ -1404,8 +1895,25 @@ _nv(
     "run_time_info",
     "bubble_model",
     "lag_params",
+    "particle_pp",
+    "particles_lagrange",
     "probe_wrt",
     "num_probes",
+    "jwl_ab_model",
+    "jwl_q_ab",
+    "jwl_ab_tau",
+    "jwl_ab_A",
+    "jwl_ab_theta",
+    "jwl_ab_n",
+    "prog_burn",
+    "pb_D_cj",
+    "pb_width",
+    "pb_x_det",
+    "pb_y_det",
+    "pb_z_det",
+    "pb_t_det",
+    "jwl_G",
+    "jwl_b_exp",
     "probe",
     "acoustic_source",
     "num_source",
@@ -1539,6 +2047,7 @@ _nv(
     "flux_wrt",
     "alpha_wrt",
     "cf_wrt",
+    "jwl_wrt",
     "chem_wrt_T",
     "chem_wrt_Y",
     "alpha_rho_e_wrt",

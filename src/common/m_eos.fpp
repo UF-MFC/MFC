@@ -41,7 +41,8 @@ module m_eos
         & s_compute_speed_of_sound_avg, s_initialize_eos_module, s_finalize_eos_module, f_pressure, f_bulk_modulus, &
         & f_relativistic_enthalpy, f_isentrope_exponent, f_isentrope_pressure, f_sg_thermal, f_mixture_temperature, &
         & f_is_state_dependent, s_phase_coefficients, s_phase_pressure_on_isentrope, s_phase_temperature, &
-        & s_phase_density_on_isentrope, s_phase_internal_energy, s_phase_bulk_modulus
+        & s_phase_density_at_temperature, s_phase_density_on_isentrope, s_phase_internal_energy, s_phase_bulk_modulus, eoss, &
+        & isentrope_B
 
 contains
 
@@ -467,6 +468,38 @@ contains
         end if
 
     end subroutine s_phase_temperature
+
+    !> Density of phase i at pressure p_to and the temperature of (rho_from, p_from). This reconstructs an adiabatic immersed-wall
+    !! state. State-dependent EOS families use their complete temperature relation rather than a stiffened-gas surrogate.
+    subroutine s_phase_density_at_temperature(i, rho_from, p_from, p_to, rho_to)
+
+        $:GPU_ROUTINE(function_name='s_phase_density_at_temperature', parallelism='[seq]')
+
+        integer, intent(in)   :: i
+        real(wp), intent(in)  :: rho_from, p_from, p_to
+        real(wp), intent(out) :: rho_to
+        real(wp)              :: T_target, T_ref, T0, p_ref, p_at, e_ref, dp_drho, de_drho, G0, dG0, dTref_drho, dp_at_drho
+        integer               :: iter
+
+        if (.not. f_is_state_dependent(i)) then
+            rho_to = rho_from*(p_to + isentrope_B(i))/(p_from + isentrope_B(i))
+            return
+        end if
+
+        call s_phase_temperature(rho_from, p_from, i, T_target)
+        rho_to = rho_from
+        $:GPU_LOOP(parallelism='[seq]')
+        do iter = 1, 4
+            call s_reference_curve(rho_to, i, p_ref, e_ref, dp_drho, de_drho, G0, dG0)
+            T0 = eos_coeffs(i)%t0
+            call s_rk4(ode_reference_temperature, i, 1._wp/eos_coeffs(i)%rho0, T0, 1._wp/rho_to, T_ref)
+            dTref_drho = de_drho/cvs(i) - p_ref/(cvs(i)*rho_to**2) + G0*T_ref/rho_to
+            p_at = p_ref + rho_to*G0*cvs(i)*(T_target - T_ref)
+            dp_at_drho = dp_drho + cvs(i)*((G0 + rho_to*dG0)*(T_target - T_ref) - rho_to*G0*dTref_drho)
+            rho_to = max(rho_to - (p_at - p_to)/dp_at_drho, sgm_eps)
+        end do
+
+    end subroutine s_phase_density_at_temperature
 
     !> Density of phase i on the isentrope through (rho_from, p_from) at p_to, and c^2 there: Newton on the pressure integrator,
     !! whose slope is c^2. The relaxation's own Newton wraps this, so a few steps suffice.
