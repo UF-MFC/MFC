@@ -875,7 +875,8 @@ contains
         integer                                      :: i, j, k, ix, jy, kz, npts, npts_z, N
         integer                                      :: ix_count, jy_count, kz_count
         integer                                      :: hit_x, hit_y, hit_z
-        real(wp)                                     :: fx, fy, fz, weight, numerator, denominator, val, eps, tol
+        real(wp)                                     :: fx, fy, fz, delta_x, delta_y, delta_z
+        real(wp)                                     :: weight, numerator, denominator, xBar, val, eps, tol
 
         i = cell(1)
         j = cell(2)
@@ -887,8 +888,7 @@ contains
         if (num_dims == 2) npts_z = 0
         eps = 1.e-12_wp
 
-        ! A barycentric term divides by (pos - node). Detect an exact stencil node in
-        ! each coordinate and reduce that dimension to its nodal value before forming it.
+        ! A barycentric term divides by (pos - node). Treat nodes within a local-spacing tolerance as hits.
         hit_x = 0
         hit_y = 0
         hit_z = 0
@@ -922,8 +922,10 @@ contains
             if (hit_x /= 0 .and. ix_count /= hit_x) cycle
             if (hit_x /= 0) then
                 fx = 1._wp
+                delta_x = 1._wp
             else
-                fx = wx(ix_count)%sf(i, 1, 1)/(pos(1) - x_cc(ix))
+                fx = wx(ix_count)%sf(i, 1, 1)
+                delta_x = pos(1) - x_cc(ix)
             end if
 
             jy_count = 0
@@ -932,8 +934,10 @@ contains
                 if (hit_y /= 0 .and. jy_count /= hit_y) cycle
                 if (hit_y /= 0) then
                     fy = 1._wp
+                    delta_y = 1._wp
                 else
-                    fy = wy(jy_count)%sf(j, 1, 1)/(pos(2) - y_cc(jy))
+                    fy = wy(jy_count)%sf(j, 1, 1)
+                    delta_y = pos(2) - y_cc(jy)
                 end if
 
                 kz_count = 0
@@ -943,14 +947,19 @@ contains
                         if (hit_z /= 0 .and. kz_count /= hit_z) cycle
                         if (hit_z /= 0) then
                             fz = 1._wp
+                            delta_z = 1._wp
                         else
-                            fz = wz(kz_count)%sf(k, 1, 1)/(pos(3) - z_cc(kz))
+                            fz = wz(kz_count)%sf(k, 1, 1)
+                            delta_z = pos(3) - z_cc(kz)
                         end if
                     else
                         fz = 1._wp
+                        delta_z = 1._wp
                     end if
 
                     weight = fx*fy*fz
+                    xBar = delta_x*delta_y*delta_z
+                    weight = weight/xBar
                     numerator = numerator + weight*field_vf(field_index)%sf(ix, jy, kz)
                     denominator = denominator + weight
                 end do
