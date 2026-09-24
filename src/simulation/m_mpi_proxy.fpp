@@ -100,17 +100,31 @@ contains
 
     subroutine s_initialize_solid_particles_mpi(lag_num_ts)
 
-        integer :: i, j, k
-        integer :: real_size, int_size, nReal, lag_num_ts, max_dirs
-        integer :: ierr  !< Generic flag used to identify and report MPI errors
+        integer         :: i, j, k
+        integer         :: real_size, int_size, lag_num_ts, max_dirs
+        integer(kind=8) :: nReal_8, p_var_size_8, p_buff_size_8
+        integer         :: ierr  !< Generic flag used to identify and report MPI errors
 
 #ifdef MFC_MPI
         call MPI_Pack_size(1, mpi_p, MPI_COMM_WORLD, real_size, ierr)
         call MPI_Pack_size(1, MPI_INTEGER, MPI_COMM_WORLD, int_size, ierr)
         max_dirs = 2**num_dims - 1
-        nReal = 10 + 13*2 + 7*lag_num_ts
-        p_var_size = (nReal*real_size + 2*int_size)
-        p_buff_size = lag_params%nParticles_glb*p_var_size*max_dirs
+        nReal_8 = 10_8 + 13_8*2_8 + 7_8*int(lag_num_ts, 8)
+        if (nReal_8 > (int(huge(p_var_size), 8) - 2_8*int(int_size, 8))/int(real_size, 8)) then
+            call s_mpi_abort('Solid-particle MPI record size exceeds the 32-bit MPI count limit')
+        end if
+        p_var_size_8 = nReal_8*int(real_size, 8) + 2_8*int(int_size, 8)
+        p_var_size = int(p_var_size_8)
+
+        p_buff_size_8 = int(lag_params%nParticles_glb, 8)*p_var_size_8
+        if (p_buff_size_8 > int(huge(p_buff_size), 8)/int(max_dirs, 8)) then
+            call s_mpi_abort('Solid-particle MPI buffer size exceeds the 32-bit MPI count limit')
+        end if
+        p_buff_size_8 = p_buff_size_8*int(max_dirs, 8)
+        if (p_buff_size_8 > int(huge(p_buff_size), 8)) then
+            call s_mpi_abort('Solid-particle MPI buffer size exceeds the 32-bit MPI count limit')
+        end if
+        p_buff_size = int(p_buff_size_8)
         @:ALLOCATE(p_send_buff(0:p_buff_size), p_recv_buff(0:p_buff_size))
         @:ALLOCATE(p_send_ids(nidx(1)%beg:nidx(1)%end, nidx(2)%beg:nidx(2)%end, nidx(3)%beg:nidx(3)%end, &
                    & 0:lag_params%nParticles_glb))
