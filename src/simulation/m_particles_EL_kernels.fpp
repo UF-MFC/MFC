@@ -7,8 +7,7 @@
 !> @brief This module contains kernel functions used to map the effect of the lagrangian particles in the Eulerian framework.
 module m_particles_EL_kernels
 
-    use m_mpi_proxy      !< Message passing interface (MPI) module proxy
-    use ieee_arithmetic  !< For checking NaN
+    use m_mpi_proxy  !< Message passing interface (MPI) module proxy
     use m_helper, only: s_prng
 
     implicit none
@@ -40,6 +39,16 @@ module m_particles_EL_kernels
     $:GPU_DECLARE(create='[mapCells_loc, alpha]')
 
 contains
+
+    logical function f_is_finite_gpu(val) result(is_finite)
+
+        $:GPU_ROUTINE(function_name='f_is_finite_gpu', parallelism='[seq]', cray_inline=True)
+
+        real(wp), intent(in) :: val
+
+        is_finite = val == val .and. abs(val) <= huge(val)
+
+    end function f_is_finite_gpu
 
     !> The purpose of this subroutine is to initialize constants for use in the particle kernels
     subroutine s_initialize_particle_kernels()
@@ -250,6 +259,8 @@ contains
     end subroutine s_gaussian_atomic
 
     subroutine s_applygaussian_aniso(center, cellaux, nodecoord, func)
+
+        $:GPU_ROUTINE(function_name='s_applygaussian_aniso', parallelism='[seq]', cray_inline=True)
 
         real(wp), dimension(3), intent(in) :: center
         integer, dimension(3), intent(in)  :: cellaux
@@ -666,7 +677,7 @@ contains
             fam = Cam*vol*(-v_rel*SDrho + rhoDuDt + fluid_vel*(vrel_gradrho))
 
             do dir = 1, num_dims
-                if (.not. ieee_is_finite(fam(dir))) then
+                if (.not. f_is_finite_gpu(fam(dir))) then
                     fam(dir) = 0._wp
                     rmass_add = 0._wp
                 end if
@@ -688,7 +699,7 @@ contains
         end if
 
         do dir = 1, num_dims
-            if (.not. ieee_is_finite(force(dir))) then
+            if (.not. f_is_finite_gpu(force(dir))) then
                 force(dir) = 0._wp
             end if
         end do
@@ -727,8 +738,8 @@ contains
         real(wp), dimension(5)              :: UnifRnd
         integer                             :: i
 
-        if (.not. ieee_is_finite(fqs_fluct_old(1)) .or. .not. ieee_is_finite(fqs_fluct_old(2)) &
-            & .or. .not. ieee_is_finite(fqs_fluct_old(3))) then
+        if (.not. f_is_finite_gpu(fqs_fluct_old(1)) .or. .not. f_is_finite_gpu(fqs_fluct_old(2)) &
+            & .or. .not. f_is_finite_gpu(fqs_fluct_old(3))) then
             fqs_fluct_new = 0._wp
             return
         end if
@@ -861,10 +872,10 @@ contains
         type(scalar_field), dimension(:), intent(in) :: field_vf
         type(scalar_field), dimension(:), intent(in) :: wx, wy, wz
         integer, intent(in)                          :: field_index
-        integer                                      :: i, j, k, ix, jy, kz, npts, npts_z, N, a, b
+        integer                                      :: i, j, k, ix, jy, kz, npts, npts_z, N
         integer                                      :: ix_count, jy_count, kz_count
-        real(wp)                                     :: weight, numerator, denominator, xBar, eps
-        real(wp)                                     :: val, local_min, local_max, prod_x, prod_y, prod_z
+        integer                                      :: hit_x, hit_y, hit_z
+        real(wp)                                     :: fx, fy, fz, weight, numerator, denominator, val, eps, tol
 
         i = cell(1)
         j = cell(2)
@@ -875,26 +886,71 @@ contains
         npts_z = npts
         if (num_dims == 2) npts_z = 0
         eps = 1.e-12_wp
+
+        ! A barycentric term divides by (pos - node). Detect an exact stencil node in
+        ! each coordinate and reduce that dimension to its nodal value before forming it.
+        hit_x = 0
+        hit_y = 0
+        hit_z = 0
+        ix_count = 0
+        do ix = i - npts, i + npts
+            ix_count = ix_count + 1
+            tol = 1.e-10_wp*dx(ix)
+            if (abs(pos(1) - x_cc(ix)) <= tol) hit_x = ix_count
+        end do
+        jy_count = 0
+        do jy = j - npts, j + npts
+            jy_count = jy_count + 1
+            tol = 1.e-10_wp*dy(jy)
+            if (abs(pos(2) - y_cc(jy)) <= tol) hit_y = jy_count
+        end do
+        if (num_dims == 3) then
+            kz_count = 0
+            do kz = k - npts_z, k + npts_z
+                kz_count = kz_count + 1
+                tol = 1.e-10_wp*dz(kz)
+                if (abs(pos(3) - z_cc(kz)) <= tol) hit_z = kz_count
+            end do
+        end if
+
         numerator = 0._wp
         denominator = 0._wp
 
         ix_count = 0
         do ix = i - npts, i + npts
             ix_count = ix_count + 1
+            if (hit_x /= 0 .and. ix_count /= hit_x) cycle
+            if (hit_x /= 0) then
+                fx = 1._wp
+            else
+                fx = wx(ix_count)%sf(i, 1, 1)/(pos(1) - x_cc(ix))
+            end if
+
             jy_count = 0
             do jy = j - npts, j + npts
                 jy_count = jy_count + 1
+                if (hit_y /= 0 .and. jy_count /= hit_y) cycle
+                if (hit_y /= 0) then
+                    fy = 1._wp
+                else
+                    fy = wy(jy_count)%sf(j, 1, 1)/(pos(2) - y_cc(jy))
+                end if
+
                 kz_count = 0
                 do kz = k - npts_z, k + npts_z
                     kz_count = kz_count + 1
                     if (num_dims == 3) then
-                        xBar = (pos(1) - x_cc(ix))*(pos(2) - y_cc(jy))*(pos(3) - z_cc(kz))
-                        weight = wx(ix_count)%sf(i, 1, 1)*wy(jy_count)%sf(j, 1, 1)*wz(kz_count)%sf(k, 1, 1)
+                        if (hit_z /= 0 .and. kz_count /= hit_z) cycle
+                        if (hit_z /= 0) then
+                            fz = 1._wp
+                        else
+                            fz = wz(kz_count)%sf(k, 1, 1)/(pos(3) - z_cc(kz))
+                        end if
                     else
-                        xBar = (pos(1) - x_cc(ix))*(pos(2) - y_cc(jy))
-                        weight = wx(ix_count)%sf(i, 1, 1)*wy(jy_count)%sf(j, 1, 1)
+                        fz = 1._wp
                     end if
-                    weight = weight/xBar
+
+                    weight = fx*fy*fz
                     numerator = numerator + weight*field_vf(field_index)%sf(ix, jy, kz)
                     denominator = denominator + weight
                 end do
@@ -902,6 +958,8 @@ contains
         end do
 
         val = numerator/denominator
+
+        if (.not. f_is_finite_gpu(val)) val = field_vf(field_index)%sf(i, j, k)
 
         if (abs(val) <= eps) then
             val = 0._wp
