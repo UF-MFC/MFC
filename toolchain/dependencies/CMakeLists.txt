@@ -51,7 +51,7 @@ endif()
 # HDF5
 if (MFC_HDF5)
     find_package(HDF5)
-    if (HDF5_FOUND)
+    if (HDF5_FOUND AND HDF5_VERSION AND HDF5_VERSION VERSION_GREATER_EQUAL 1.12)
         message(STATUS "HDF5 found.")
         add_custom_target(hdf5)
     else()

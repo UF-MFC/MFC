@@ -155,6 +155,8 @@ module m_derived_types
         integer               :: c        !< Color function equation
         integer               :: damage   !< Damage variable equation
         integer               :: psi      !< Psi variable equation
+        integer               :: abn      !< JWL afterburn progress equation
+        integer               :: rxn      !< JWL++ reaction progress equation
     end type eqn_idx_info
 
     !> Initial-condition state assembled by pre_process: working primitive and
@@ -310,6 +312,7 @@ module m_derived_types
         real(wp) :: m0  !< Bubble velocity
         integer :: hcid  !< Hardcoded initial condition ID
         real(wp) :: cf_val  !< Color function value
+        real(wp) :: rxn_val  !< Initial JWL++ reaction progress
         real(wp) :: Y(1:num_species)  !< Species mass fractions
 
         ! STL/OBJ model patch: index into the shared stl_models(:) table
@@ -391,6 +394,7 @@ module m_derived_types
         integer  :: moving_ibm  !< Motion flag: 0=static, 1=moving (forces), 2=forced path
         integer  :: seed  !< Random seed for reproducible placement
         integer  :: cloud_geometry  !< Cloud region geometry: 1=box, 2=hemisphere shell
+        integer  :: shell_axis  !< Axis the hemisphere shell opens toward: 1=x, 2=y, 3=z (2D ignores 3)
         integer  :: packing_method  !< Packing algorithm: 1=rejection sampling, 2=lattice
         integer  :: periodic  !< Periodic overlap flag for box rejection packing: 0=off, 1=on
     end type particle_cloud_parameters
@@ -398,43 +402,46 @@ module m_derived_types
     !> Derived type annexing the physical parameters (PP) of the fluids. These include the specific heat ratio function and liquid
     !! stiffness function.
     type physical_parameters
-        real(wp)               :: gamma              !< Sp. heat ratio
-        real(wp)               :: pi_inf             !< Liquid stiffness
-        real(wp), dimension(2) :: Re                 !< Reynolds number
-        real(wp)               :: k_therm            !< Thermal conductivity (name avoids %K, the Herschel-Bulkley index)
-        real(wp)               :: cv                 !< heat capacity
-        real(wp)               :: qv                 !< reference energy per unit mass for SGEOS, q (see Le Metayer (2004))
-        real(wp)               :: qvp                !< reference entropy per unit mass for SGEOS, q' (see Le Metayer (2004))
+        real(wp)               :: gamma  !< Sp. heat ratio
+        real(wp)               :: pi_inf  !< Liquid stiffness
+        real(wp), dimension(2) :: Re  !< Reynolds number
+        real(wp)               :: k_therm  !< Thermal conductivity (name avoids %K, the Herschel-Bulkley index)
+        real(wp)               :: cv  !< heat capacity
+        real(wp)               :: qv  !< reference energy per unit mass for SGEOS, q (see Le Metayer (2004))
+        real(wp)               :: qvp  !< reference entropy per unit mass for SGEOS, q' (see Le Metayer (2004))
         real(wp)               :: G
-        integer                :: eos                !< Equation of state selector (eos_* in m_constants)
-        real(wp)               :: mg_rho0            !< Mie-Gruneisen reference density
-        real(wp)               :: mg_c0              !< Mie-Gruneisen bulk sound speed at mg_rho0
-        real(wp)               :: mg_s               !< Mie-Gruneisen linear Hugoniot slope, u_s = c0 + s u_p
-        real(wp)               :: mg_gruneisen       !< Gruneisen coefficient Gamma_G (not the shear modulus G)
-        real(wp)               :: mg_gruneisen_a     !< d(Gamma_G)/d(mu): Gamma_G = Gamma_0 + a mu, zero keeps it constant
-        real(wp)               :: mg_t0              !< temperature at the reference density (for T output)
-        real(wp)               :: mg_s2, mg_s3       !< u_s = c0 + s u_p + s2 u_p^2 + s3 u_p^3; zero keeps the fit linear
-        real(wp)               :: jwl_a              !< JWL A
-        real(wp)               :: jwl_b              !< JWL B
-        real(wp)               :: jwl_r1             !< JWL R1
-        real(wp)               :: jwl_r2             !< JWL R2
-        real(wp)               :: jwl_omega          !< JWL omega (its Gruneisen coefficient)
-        real(wp)               :: jwl_rho0           !< JWL reference density
-        real(wp)               :: jwl_t0             !< temperature at the reference density (for T output)
-        real(wp)               :: vinet_k0           !< Vinet bulk modulus at rho0
-        real(wp)               :: vinet_k0p          !< Vinet pressure derivative of the bulk modulus
-        real(wp)               :: vinet_rho0         !< Vinet reference density
-        real(wp)               :: vinet_gruneisen    !< Gruneisen coefficient at rho0
+        integer                :: eos  !< Equation of state selector (eos_* in m_constants)
+        real(wp)               :: mg_rho0  !< Mie-Gruneisen reference density
+        real(wp)               :: mg_c0  !< Mie-Gruneisen bulk sound speed at mg_rho0
+        real(wp)               :: mg_s  !< Mie-Gruneisen linear Hugoniot slope, u_s = c0 + s u_p
+        real(wp)               :: mg_gruneisen  !< Gruneisen coefficient Gamma_G (not the shear modulus G)
+        real(wp)               :: mg_gruneisen_a  !< d(Gamma_G)/d(mu): Gamma_G = Gamma_0 + a mu, zero keeps it constant
+        real(wp)               :: mg_t0  !< temperature at the reference density (for T output)
+        real(wp)               :: mg_s2, mg_s3  !< u_s = c0 + s u_p + s2 u_p^2 + s3 u_p^3; zero keeps the fit linear
+        real(wp)               :: jwl_a  !< JWL A
+        real(wp)               :: jwl_b  !< JWL B
+        real(wp)               :: jwl_r1  !< JWL R1
+        real(wp)               :: jwl_r2  !< JWL R2
+        real(wp)               :: jwl_omega  !< JWL omega (its Gruneisen coefficient)
+        real(wp)               :: jwl_rho0  !< JWL reference density
+        real(wp)               :: jwl_t0  !< temperature at the reference density (for T output)
+        real(wp)               :: jwl_Q, jwl_E0  !< JWL detonation energy, in specific or volumetric form
+        real(wp)               :: jwl_air_e0, jwl_air_rho0, jwl_air_p0  !< ambient reference state for the mixed closure
+        real(wp)               :: jwl_ej_rho_ref, jwl_delta_e  !< products-energy reference and reactant offset
+        real(wp)               :: vinet_k0  !< Vinet bulk modulus at rho0
+        real(wp)               :: vinet_k0p  !< Vinet pressure derivative of the bulk modulus
+        real(wp)               :: vinet_rho0  !< Vinet reference density
+        real(wp)               :: vinet_gruneisen  !< Gruneisen coefficient at rho0
         real(wp)               :: vinet_gruneisen_a  !< d(Gamma_G)/d(mu)
-        real(wp)               :: vinet_t0           !< temperature at the reference density (for T output)
-        logical                :: non_newtonian      !< Enable Herschel-Bulkley non-Newtonian viscosity
-        real(wp)               :: K                  !< HB consistency index
-        real(wp)               :: nn                 !< HB flow behavior index
-        real(wp)               :: tau0               !< HB yield stress (0 => power-law)
-        real(wp)               :: hb_m               !< Papanastasiou regularization parameter
-        real(wp)               :: mu_min             !< Lower viscosity clamp (inactive sentinel = dflt_real)
-        real(wp)               :: mu_max             !< Upper viscosity clamp (required when non_newtonian)
-        real(wp)               :: mu_bulk            !< Bulk viscosity for NN (inactive sentinel = dflt_real)
+        real(wp)               :: vinet_t0  !< temperature at the reference density (for T output)
+        logical                :: non_newtonian  !< Enable Herschel-Bulkley non-Newtonian viscosity
+        real(wp)               :: K  !< HB consistency index
+        real(wp)               :: nn  !< HB flow behavior index
+        real(wp)               :: tau0  !< HB yield stress (0 => power-law)
+        real(wp)               :: hb_m  !< Papanastasiou regularization parameter
+        real(wp)               :: mu_min  !< Lower viscosity clamp (inactive sentinel = dflt_real)
+        real(wp)               :: mu_max  !< Upper viscosity clamp (required when non_newtonian)
+        real(wp)               :: mu_bulk  !< Bulk viscosity for NN (inactive sentinel = dflt_real)
     end type physical_parameters
 
     !> Derived type annexing the physical parameters required for sub-grid bubble models
@@ -460,6 +467,16 @@ module m_derived_types
         real(wp) :: R_v      !< gas constant of host in vapor state
         real(wp) :: R_g      !< gas constant of gas (bubble)
     end type subgrid_bubble_physical_parameters
+
+    !> Physical parameters for Lagrangian solid particles
+    type subgrid_particle_physical_parameters
+        real(wp) :: rho0ref_particle  !< Reference particle density
+        real(wp) :: cp_particle       !< Particle specific heat capacity
+        real(wp) :: ksp_col           !< Collision stiffness multiplier
+        real(wp) :: nu_col            !< Particle Poisson ratio
+        real(wp) :: E_col             !< Particle Young's modulus
+        real(wp) :: cor_col           !< Collision coefficient of restitution
+    end type subgrid_particle_physical_parameters
 
     type mpi_io_airfoil_ib_var
         integer, dimension(2)                    :: view
@@ -520,6 +537,7 @@ module m_derived_types
         real(wp), dimension(3)       :: ip_loc         !< Physical location of the image point
         integer, dimension(3)        :: ip_grid        !< Top left grid point of IP
         real(wp), dimension(2, 2, 2) :: interp_coeffs  !< Interpolation Coefficients of image point
+        logical                      :: interp_valid   !< .false. if every image point stencil cell lies inside an IB
         integer                      :: ib_patch_id    !< ID of the IB Patch the ghost point is part of
         real(wp)                     :: levelset
         real(wp), dimension(1:3)     :: levelset_norm
@@ -582,26 +600,37 @@ module m_derived_types
     !> Lagrangian bubble parameters
     type bubbles_lagrange_parameters
 
-        integer                    :: solver_approach  !< 1: One-way coupling, 2: two-way coupling
-        integer                    :: cluster_type  !< Cluster model to find p_inf
-        logical                    :: pressure_corrector  !< Cell pressure correction term
-        integer                    :: smooth_type  !< Smoothing function. 1: Gaussian, 2:Delta 3x3
-        logical                    :: heatTransfer_model  !< Activate HEAT transfer model at the bubble-liquid interface
-        logical                    :: massTransfer_model  !< Activate MASS transfer model at the bubble-liquid interface
-        logical                    :: write_void_evol  !< Write files to track evolution of void fraction at each time step
-        logical                    :: write_bubbles  !< Write files to track the bubble evolution each time step
-        logical                    :: write_bubbles_stats  !< Write the maximum and minimum radius of each bubble
-        integer                    :: nBubs_glb  !< Global number of bubbles
-        integer                    :: vel_model  !< Particle velocity model
-        integer                    :: drag_model  !< Particle drag model
-        logical                    :: pressure_force  !< Include pressure force translational motion
-        logical                    :: gravity_force  !< Include gravity force in translational motion
-        logical                    :: kahan_summation  !< Use Kahan summation for void fraction accumulation (improves precision)
-        character(LEN=pathlen_max) :: input_path  !< Path to lag_bubbles.dat
-        real(wp)                   :: epsilonb  !< Standard deviation scaling for the gaussian function
-        real(wp)                   :: charwidth  !< Domain virtual depth (z direction, for 2D simulations)
-        integer                    :: charNz  !< Number of grid cells in characteristic depth
-        real(wp)                   :: valmaxvoid  !< Maximum void fraction permitted
+        integer :: solver_approach                     !< 1: One-way coupling, 2: two-way coupling
+        integer :: cluster_type                        !< Cluster model to find p_inf
+        logical :: pressure_corrector                  !< Cell pressure correction term
+        integer :: smooth_type                         !< Smoothing function. 1: Gaussian, 2:Delta 3x3
+        logical :: heatTransfer_model                  !< Activate HEAT transfer model at the bubble-liquid interface
+        logical :: massTransfer_model                  !< Activate MASS transfer model at the bubble-liquid interface
+        logical :: write_void_evol                     !< Write files to track evolution of void fraction at each time step
+        logical :: write_bubbles                       !< Write files to track the bubble evolution each time step
+        logical :: write_bubbles_stats                 !< Write the maximum and minimum radius of each bubble
+        integer :: nBubs_glb                           !< Global number of bubbles
+        integer :: vel_model                           !< Particle velocity model
+        integer :: drag_model                          !< Particle drag model
+        integer :: nParticles_glb                      !< Global number of solid particles
+        integer :: qs_drag_model                       !< Quasi-steady solid-particle drag model
+        integer :: stokes_drag                         !< Stokes drag model for solid particles
+        integer :: added_mass_model                    !< Added-mass model for solid particles
+        integer :: interpolation_order                 !< Particle-to-fluid interpolation order
+        integer :: N_collision_subcycles               !< Collision subcycles
+        logical :: pressure_force                      !< Include pressure force translational motion
+        logical :: gravity_force                       !< Include gravity force in translational motion
+        logical :: collision_force                     !< Enable solid-particle collisions
+        logical :: subcycle_collisions                 !< Subcycle solid-particle collisions
+        logical :: qs_fluct_force                      !< Enable quasi-steady force fluctuations
+        logical :: kahan_summation                     !< Use Kahan summation for void fraction accumulation (improves precision)
+        character(LEN=pathlen_max) :: input_path       !< Path to lag_bubbles.dat
+        real(wp), dimension(num_fluids_max) :: mu_ref  !< Reference viscosity for particle drag
+        real(wp), dimension(num_fluids_max) :: suth    !< Sutherland parameter for particle drag viscosity
+        real(wp) :: epsilonb                           !< Standard deviation scaling for the gaussian function
+        real(wp) :: charwidth                          !< Domain virtual depth (z direction, for 2D simulations)
+        integer :: charNz                              !< Number of grid cells in characteristic depth
+        real(wp) :: valmaxvoid                         !< Maximum void fraction permitted
     end type bubbles_lagrange_parameters
 
     !> Max and min number of cells in a direction of each combination of x-,y-, and z-

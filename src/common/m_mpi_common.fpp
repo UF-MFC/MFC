@@ -32,7 +32,7 @@ module m_mpi_common
     type(int_bounds_info)                        :: comm_coords(3)
     integer                                      :: comm_size(3)
     !> q_beta indices to communicate: 1=void fraction, 2=d(beta)/dt, 5=energy source
-    integer :: beta_vars(1:3) = [1, 2, 5]
+    integer, allocatable :: beta_vars(:)
     $:GPU_DECLARE(create='[comm_coords, comm_size, beta_vars]')
 
 #ifndef __NVCOMPILER_GPU_UNIFIED_MEM
@@ -48,10 +48,24 @@ module m_mpi_common
 contains
 
     !> Initialize the module.
-    impure subroutine s_initialize_mpi_common_module(exchange_all_chemistry_temperatures_in, use_rdma_transport_in)
+    impure subroutine s_initialize_mpi_common_module(exchange_all_chemistry_temperatures_in, use_rdma_transport_in, &
+        & particle_betas_in)
 
-        logical, intent(in) :: exchange_all_chemistry_temperatures_in
-        logical, intent(in) :: use_rdma_transport_in
+        logical, intent(in)           :: exchange_all_chemistry_temperatures_in
+        logical, intent(in)           :: use_rdma_transport_in
+        logical, optional, intent(in) :: particle_betas_in
+        logical                       :: particle_betas
+        integer                       :: beta_comm_size(3), beta_halo_size
+
+        particle_betas = .false.
+        if (present(particle_betas_in)) particle_betas = particle_betas_in
+        if (particle_betas) then
+            @:ALLOCATE(beta_vars(1:7))
+            beta_vars = [1, 2, 3, 4, 5, 6, 7]
+        else if (bubbles_lagrange) then
+            @:ALLOCATE(beta_vars(1:3))
+            beta_vars = [1, 2, 5]
+        end if
 
         exchange_all_chemistry_temperatures = exchange_all_chemistry_temperatures_in
         use_rdma_transport = use_rdma_transport_in
@@ -79,6 +93,20 @@ contains
             halo_size = -1 + buff_size*(v_size)
         end if
 
+        ! Size the shared buffers for both flow and Lagrangian exchanges before allocation.
+        if (allocated(beta_vars)) then
+            beta_comm_size = [m + 2*mapCells + 3, merge(n + 2*mapCells + 3, 1, n > 0), merge(p + 2*mapCells + 3, 1, p > 0)]
+            if (p > 0) then
+                beta_halo_size = 2*(mapCells + 1)*size(beta_vars)*max(beta_comm_size(2)*beta_comm_size(3), &
+                                    & beta_comm_size(1)*beta_comm_size(3), beta_comm_size(1)*beta_comm_size(2)) - 1
+            else if (n > 0) then
+                beta_halo_size = 2*(mapCells + 1)*size(beta_vars)*max(beta_comm_size(1), beta_comm_size(2)) - 1
+            else
+                beta_halo_size = 2*(mapCells + 1)*size(beta_vars) - 1
+            end if
+            halo_size = max(halo_size, int(beta_halo_size, kind=kind(halo_size)))
+        end if
+
         $:GPU_UPDATE(device='[halo_size, v_size]')
 
 #ifndef __NVCOMPILER_GPU_UNIFIED_MEM
@@ -90,7 +118,9 @@ contains
 #endif
 #endif
 
-        $:GPU_UPDATE(device='[beta_vars]')
+        if (allocated(beta_vars)) then
+            $:GPU_UPDATE(device='[beta_vars]')
+        end if
 
     end subroutine s_initialize_mpi_common_module
 
@@ -1072,11 +1102,12 @@ contains
     !! @param q_cons_vf Cell-average conservative variables
     !! @param mpi_dir MPI communication coordinate direction
     !! @param pbc_loc Processor boundary condition (PBC) location
-    subroutine s_mpi_reduce_beta_variables_buffers(q_comm, kahan_comp, mpi_dir, pbc_loc, nVar)
+    subroutine s_mpi_reduce_beta_variables_buffers(q_comm, kahan_comp, mpi_dir, pbc_loc, nVar, vars_comm)
 
         type(scalar_field), dimension(1:), intent(inout) :: q_comm
         type(scalar_field), dimension(1:), intent(inout) :: kahan_comp
         integer, intent(in)                              :: mpi_dir, pbc_loc, nVar
+        integer, dimension(:), intent(in)                :: vars_comm
         integer                                          :: i, j, k, l, r, q  !< Generic loop iterators
         integer                                          :: lb_size
         integer                                          :: buffer_counts(1:3), buffer_count
@@ -1093,8 +1124,8 @@ contains
         call nvtxStartRange("BETA-COMM-PACKBUF")
 
         ! Set bounds for each dimension Always include the full buffer range for each existing dimension. The Gaussian smearing
-        ! kernel writes to buffer cells even at physical boundaries, and these contributions must be communicated to neighbors in
-        ! other directions via ADD operations.
+        ! kernel writes to buffer cells even at physical boundaries, and these contributions must be communicated to neighbors
+        ! in other directions via ADD operations.
         comm_coords(1)%beg = -mapcells - 1
         comm_coords(1)%end = m + mapcells + 1
         comm_coords(2)%beg = merge(-mapcells - 1, 0, n > 0)
@@ -1151,8 +1182,8 @@ contains
                                 do i = 1, v_size
                                     r = (i - 1) + v_size*((j + mapcells + 1) + lb_size*((k - comm_coords(2)%beg) + comm_size(2) &
                                          & *(l - comm_coords(3)%beg)))
-                                    buff_send(r) = real(q_comm(beta_vars(i))%sf(j + pack_offset, k, l), &
-                                              & kind=wp) - real(kahan_comp(beta_vars(i))%sf(j + pack_offset, k, l), kind=wp)
+                                    buff_send(r) = real(q_comm(vars_comm(i))%sf(j + pack_offset, k, l), &
+                                              & kind=wp) - real(kahan_comp(vars_comm(i))%sf(j + pack_offset, k, l), kind=wp)
                                 end do
                             end do
                         end do
@@ -1166,8 +1197,8 @@ contains
                                 do j = comm_coords(1)%beg, comm_coords(1)%end
                                     r = (i - 1) + v_size*((j - comm_coords(1)%beg) + comm_size(1)*((k + mapcells + 1) &
                                          & + lb_size*(l - comm_coords(3)%beg)))
-                                    buff_send(r) = real(q_comm(beta_vars(i))%sf(j, k + pack_offset, l), &
-                                              & kind=wp) - real(kahan_comp(beta_vars(i))%sf(j, k + pack_offset, l), kind=wp)
+                                    buff_send(r) = real(q_comm(vars_comm(i))%sf(j, k + pack_offset, l), &
+                                              & kind=wp) - real(kahan_comp(vars_comm(i))%sf(j, k + pack_offset, l), kind=wp)
                                 end do
                             end do
                         end do
@@ -1181,8 +1212,8 @@ contains
                                 do j = comm_coords(1)%beg, comm_coords(1)%end
                                     r = (i - 1) + v_size*((j - comm_coords(1)%beg) + comm_size(1)*((k - comm_coords(2)%beg) &
                                          & + comm_size(2)*(l + mapcells + 1)))
-                                    buff_send(r) = real(q_comm(beta_vars(i))%sf(j, k, l + pack_offset), &
-                                              & kind=wp) - real(kahan_comp(beta_vars(i))%sf(j, k, l + pack_offset), kind=wp)
+                                    buff_send(r) = real(q_comm(vars_comm(i))%sf(j, k, l + pack_offset), &
+                                              & kind=wp) - real(kahan_comp(vars_comm(i))%sf(j, k, l + pack_offset), kind=wp)
                                 end do
                             end do
                         end do
@@ -1230,7 +1261,7 @@ contains
             #:for mpi_dir in [1, 2, 3]
                 if (mpi_dir == ${mpi_dir}$) then
                     #:if mpi_dir == 1
-                        $:GPU_PARALLEL_LOOP(collapse=4,private='[r, y_kahan, t_kahan]',copyin='[replace_buff]')
+                        $:GPU_PARALLEL_LOOP(collapse=4,private='[r, y_kahan, t_kahan]',copyin='[replace_buff, vars_comm]')
                         do l = comm_coords(3)%beg, comm_coords(3)%end
                             do k = comm_coords(2)%beg, comm_coords(2)%end
                                 do j = -mapcells - 1, mapcells
@@ -1238,17 +1269,17 @@ contains
                                         r = (i - 1) + v_size*((j + mapcells + 1) + lb_size*((k - comm_coords(2)%beg) &
                                              & + comm_size(2)*(l - comm_coords(3)%beg)))
                                         if (replace_buff) then
-                                            q_comm(beta_vars(i))%sf(j + unpack_offset, k, l) = real(buff_recv(r), kind=stp)
-                                            kahan_comp(beta_vars(i))%sf(j + unpack_offset, k, &
-                                                       & l) = real(q_comm(beta_vars(i))%sf(j + unpack_offset, k, l), &
+                                            q_comm(vars_comm(i))%sf(j + unpack_offset, k, l) = real(buff_recv(r), kind=stp)
+                                            kahan_comp(vars_comm(i))%sf(j + unpack_offset, k, &
+                                                       & l) = real(q_comm(vars_comm(i))%sf(j + unpack_offset, k, l), &
                                                        & kind=wp) - buff_recv(r)
                                         else
-                                            y_kahan = buff_recv(r) - real(kahan_comp(beta_vars(i))%sf(j + unpack_offset, k, l), &
+                                            y_kahan = buff_recv(r) - real(kahan_comp(vars_comm(i))%sf(j + unpack_offset, k, l), &
                                                                 & kind=wp)
-                                            t_kahan = real(q_comm(beta_vars(i))%sf(j + unpack_offset, k, l), kind=wp) + y_kahan
-                                            kahan_comp(beta_vars(i))%sf(j + unpack_offset, k, &
-                                                       & l) = (t_kahan - q_comm(beta_vars(i))%sf(j + unpack_offset, k, l)) - y_kahan
-                                            q_comm(beta_vars(i))%sf(j + unpack_offset, k, l) = t_kahan
+                                            t_kahan = real(q_comm(vars_comm(i))%sf(j + unpack_offset, k, l), kind=wp) + y_kahan
+                                            kahan_comp(vars_comm(i))%sf(j + unpack_offset, k, &
+                                                       & l) = (t_kahan - q_comm(vars_comm(i))%sf(j + unpack_offset, k, l)) - y_kahan
+                                            q_comm(vars_comm(i))%sf(j + unpack_offset, k, l) = t_kahan
                                         end if
                                     end do
                                 end do
@@ -1256,7 +1287,7 @@ contains
                         end do
                         $:END_GPU_PARALLEL_LOOP()
                     #:elif mpi_dir == 2
-                        $:GPU_PARALLEL_LOOP(collapse=4,private='[r, y_kahan, t_kahan]',copyin='[replace_buff]')
+                        $:GPU_PARALLEL_LOOP(collapse=4,private='[r, y_kahan, t_kahan]',copyin='[replace_buff, vars_comm]')
                         do i = 1, v_size
                             do l = comm_coords(3)%beg, comm_coords(3)%end
                                 do k = -mapcells - 1, mapcells
@@ -1264,17 +1295,17 @@ contains
                                         r = (i - 1) + v_size*((j - comm_coords(1)%beg) + comm_size(1)*((k + mapcells + 1) &
                                              & + lb_size*(l - comm_coords(3)%beg)))
                                         if (replace_buff) then
-                                            q_comm(beta_vars(i))%sf(j, k + unpack_offset, l) = real(buff_recv(r), kind=stp)
-                                            kahan_comp(beta_vars(i))%sf(j, k + unpack_offset, &
-                                                       & l) = real(q_comm(beta_vars(i))%sf(j, k + unpack_offset, l), &
+                                            q_comm(vars_comm(i))%sf(j, k + unpack_offset, l) = real(buff_recv(r), kind=stp)
+                                            kahan_comp(vars_comm(i))%sf(j, k + unpack_offset, &
+                                                       & l) = real(q_comm(vars_comm(i))%sf(j, k + unpack_offset, l), &
                                                        & kind=wp) - buff_recv(r)
                                         else
-                                            y_kahan = buff_recv(r) - real(kahan_comp(beta_vars(i))%sf(j, k + unpack_offset, l), &
+                                            y_kahan = buff_recv(r) - real(kahan_comp(vars_comm(i))%sf(j, k + unpack_offset, l), &
                                                                 & kind=wp)
-                                            t_kahan = real(q_comm(beta_vars(i))%sf(j, k + unpack_offset, l), kind=wp) + y_kahan
-                                            kahan_comp(beta_vars(i))%sf(j, k + unpack_offset, &
-                                                       & l) = (t_kahan - q_comm(beta_vars(i))%sf(j, k + unpack_offset, l)) - y_kahan
-                                            q_comm(beta_vars(i))%sf(j, k + unpack_offset, l) = t_kahan
+                                            t_kahan = real(q_comm(vars_comm(i))%sf(j, k + unpack_offset, l), kind=wp) + y_kahan
+                                            kahan_comp(vars_comm(i))%sf(j, k + unpack_offset, &
+                                                       & l) = (t_kahan - q_comm(vars_comm(i))%sf(j, k + unpack_offset, l)) - y_kahan
+                                            q_comm(vars_comm(i))%sf(j, k + unpack_offset, l) = t_kahan
                                         end if
                                     end do
                                 end do
@@ -1282,7 +1313,7 @@ contains
                         end do
                         $:END_GPU_PARALLEL_LOOP()
                     #:else
-                        $:GPU_PARALLEL_LOOP(collapse=4,private='[r, y_kahan, t_kahan]',copyin='[replace_buff]')
+                        $:GPU_PARALLEL_LOOP(collapse=4,private='[r, y_kahan, t_kahan]',copyin='[replace_buff, vars_comm]')
                         do i = 1, v_size
                             do l = -mapcells - 1, mapcells
                                 do k = comm_coords(2)%beg, comm_coords(2)%end
@@ -1290,18 +1321,18 @@ contains
                                         r = (i - 1) + v_size*((j - comm_coords(1)%beg) + comm_size(1)*((k - comm_coords(2)%beg) &
                                              & + comm_size(2)*(l + mapcells + 1)))
                                         if (replace_buff) then
-                                            q_comm(beta_vars(i))%sf(j, k, l + unpack_offset) = real(buff_recv(r), kind=stp)
-                                            kahan_comp(beta_vars(i))%sf(j, k, &
-                                                       & l + unpack_offset) = real(q_comm(beta_vars(i))%sf(j, k, &
+                                            q_comm(vars_comm(i))%sf(j, k, l + unpack_offset) = real(buff_recv(r), kind=stp)
+                                            kahan_comp(vars_comm(i))%sf(j, k, &
+                                                       & l + unpack_offset) = real(q_comm(vars_comm(i))%sf(j, k, &
                                                        & l + unpack_offset), kind=wp) - buff_recv(r)
                                         else
-                                            y_kahan = buff_recv(r) - real(kahan_comp(beta_vars(i))%sf(j, k, l + unpack_offset), &
+                                            y_kahan = buff_recv(r) - real(kahan_comp(vars_comm(i))%sf(j, k, l + unpack_offset), &
                                                                 & kind=wp)
-                                            t_kahan = real(q_comm(beta_vars(i))%sf(j, k, l + unpack_offset), kind=wp) + y_kahan
-                                            kahan_comp(beta_vars(i))%sf(j, k, &
-                                                       & l + unpack_offset) = (t_kahan - q_comm(beta_vars(i))%sf(j, k, &
+                                            t_kahan = real(q_comm(vars_comm(i))%sf(j, k, l + unpack_offset), kind=wp) + y_kahan
+                                            kahan_comp(vars_comm(i))%sf(j, k, &
+                                                       & l + unpack_offset) = (t_kahan - q_comm(vars_comm(i))%sf(j, k, &
                                                        & l + unpack_offset)) - y_kahan
-                                            q_comm(beta_vars(i))%sf(j, k, l + unpack_offset) = t_kahan
+                                            q_comm(vars_comm(i))%sf(j, k, l + unpack_offset) = t_kahan
                                         end if
                                     end do
                                 end do
@@ -1889,6 +1920,10 @@ contains
         deallocate (buff_send, buff_recv)
 #endif
 #endif
+
+        if (allocated(beta_vars)) then
+            @:DEALLOCATE(beta_vars)
+        end if
 
     end subroutine s_finalize_mpi_common_module
 

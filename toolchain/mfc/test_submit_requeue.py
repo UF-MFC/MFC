@@ -46,6 +46,7 @@ def rig(tmp_path):
         binz / "sbatch",
         f"""#!/bin/bash
 n=$(ls {submissions} | wc -l)
+n=$((n))
 cat > {submissions}/submission-$n.sh
 echo "Submitted batch job 100$n"
 """,

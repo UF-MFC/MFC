@@ -134,6 +134,7 @@ feature, detecting GPU pointers and performing RDMA accordingly.
 | `m`                      | Integer | Number of grid cells in the $x$-coordinate direction |
 | `n`                      | Integer | Number of grid cells in the $y$-coordinate direction |
 | `p`                      | Integer | Number of grid cells in the $z$-coordinate direction |
+| `pref`                   | Real    | Reference pressure                                   |
 
 The parameters define the boundaries of the spatial and temporal domains, and their discretization that are used in simulation.
 
@@ -189,7 +190,7 @@ MPI topology is automatically optimized to maximize the parallel efficiency for 
 | `tau_e(i)` *         | Real    | Supported             | Elastic stresses.                                            |
 | `hcid` *             | Integer | N/A                   | Hard coded patch id                                          |
 | `cf_val` *           | Real    | Supported             | Surface tension color function value                         |
-| `model_id`           | Integer | Not Supported         | Index into the `stl_models` array (geometry 21)              |
+| `model_id` *         | Integer | N/A                   | Index into `stl_models` for geometry 21                     |
 
 *: These parameters should be prepended with `patch_icpp(j)%` where $j$ is the patch index.
 
@@ -216,10 +217,7 @@ Some parameters, as described above, can be defined by analytical functions in t
 
 where `alpha_rho` is defined with the `1 + 0.1*sin(20*x*pi)` function.
 
-Expressions use **Python syntax** and are parsed at case load time.
-Syntax errors and unknown variable or function names are immediate, named errors — they are reported before any Fortran is compiled, with a message identifying the offending expression and listing the available names.
-
-The following variables are available in IC patch expressions:
+Expressions are translated into generated Fortran assignments when the case is prepared. The following names are available as shorthand:
 
 | Shorthand | Expands To               | Shorthand | Expands To                | Shorthand | Expands To               |
 | --------- | ------------------------ | --------- | ------------------------- | --------- | ------------------------ |
@@ -227,7 +225,7 @@ The following variables are available in IC patch expressions:
 | `y`       | `y_cc(j)`                | `ly`      | The patch's `length_y`    | `yc`      | The patch's `y_centroid` |
 | `z`       | `z_cc(k)`                | `lz`      | The patch's `length_z`    | `zc`      | The patch's `z_centroid` |
 | `eps`     | The patch's `epsilon`    | `beta`    | The patch's `beta`        | `radii`   | The patch's `radii`      |
-| `tau_e`   | The patch's `tau_e`      | `r`       | The patch's `radius`      | `pi`      | \f$\pi\f$ (Fortran constant from `m_constants`) |
+| `tau_e`   | The patch's `tau_e`      | `r`       | The patch's `radius`      | `pi` | \f$\pi\f$ |
 
 where $(i,j,k)$ are the grid-indices of the current cell in each coordinate direction.
 
@@ -243,7 +241,7 @@ In the example above, the following code is generated:
 
 ```f90
 if (patch_id == 2) then
-    q_prim_vf(eqn_idx%cont%beg)%sf(i, 0, 0) = 1 + 0.1 * sin(20 * x_cc(i) * pi)
+    q_prim_vf(eqn_idx%cont%beg)%sf(i, 0, 0) = 1 + 0.1*sin(20*x_cc(i)*3.141592653589793)
 end if
 ```
 
@@ -290,9 +288,7 @@ The code provides three pre-built patches for dimensional extrusion of initial c
   across a periodic `bc_z`. Assumes uniform z spacing. Used by
   `examples/3D_reacting_mixing_layer`.
 
-Setup: Only requires specifying `files_dir` and filename pattern via `file_extension`. The files are located, for example, at `examples/1D_flamelet/IC`, and their format is `prim.XX.YY.file_extension.dat`.
-Implementation: All variables and file handling are managed in the `case.py` file of the simulation.
-Usage: Ideal for initializing simulations from lower-dimensional solutions, enabling users to add perturbations or modifications to the base extruded fields for flow instability studies.
+For file-based extrusion, set `files_dir` to the directory containing the primitive fields and `file_extension` to the filename time field. The files follow `prim.<variable>.00.<file_extension>.dat`; their dimensions, origin, and spacing must match the target grid.
 
 The following parameters support hardcoded initial conditions that read interface data from files:
 
@@ -340,7 +336,7 @@ Optimal choice of the value of `smooth_coeff` is case-dependent and left to the 
 - `patch_icpp(j)%%alpha(i)`, `patch_icpp(j)%%alpha_rho(i)`, `patch_icpp(j)%%pres`, and `patch_icpp(j)%%vel(i)` define for $j$-th patch the void fraction of `fluid(i)`, partial density of `fluid(i)`, the pressure, and the velocity in the $i$-th coordinate direction.
 These physical parameters must be consistent with fluid material's parameters defined in the next subsection.
 
-- `model_id` selects the STL/OBJ model for a geometry-21 patch by indexing into the `stl_models` array. The model file, scaling, and translation, and the inside/outside threshold, are configured on that `stl_models` entry (see the `stl_models` section below); a cell is marked inside the model using a winding-number test.
+- `model_id` selects the STL/OBJ model for a geometry-21 patch by indexing into `stl_models`. Configure the file, scale, translation, and winding-number threshold on that `stl_models` entry.
 
 #### Elliptic Smoothing
 
@@ -360,8 +356,8 @@ This is enabled by adding ``'elliptic_smoothing': "T",`` and ``'elliptic_smoothi
 | `x[y,z]_centroid`    | Real    | Centroid of the applied geometry in the [x,y,z]-direction. |
 | `length_x[y,z]`      | Real    | Length, if applicable, in the [x,y,z]-direction. |
 | `radius`             | Real    | Radius, if applicable, of the applied geometry. |
-| `airfoil_id`         | Integer | Index into `ib_airfoil` array for NACA airfoil geometry patches. |
-| `model_id`           | Integer | Index into `stl_models` array for STL/OBJ geometry patches. |
+| `airfoil_id`         | Integer | Index into `ib_airfoil` for NACA airfoil geometry patches |
+| `model_id`           | Integer | Index into `stl_models` for STL/OBJ geometry patches |
 | `slip`               | Logical | Apply a slip boundary |
 | `moving_ibm`         | Integer | Sets the method used for IB movement. |
 | `vel(i)`             | Real    | Initial velocity of the moving IB in the i-th direction. |
@@ -407,35 +403,26 @@ Definitions for currently implemented immersed boundary patch types are listed i
 
 - `radius` is the radius to be used for circular patches.
 
-- `c`, `t`, `p`, and `m` specify the parameters for a NACA airfoil (set on the referenced `ib_airfoil` entry).
-`m` is the maximum camber, `p` is the location of maximum camber, `c` is the chord length, and `t` is the thickness.
+- `airfoil_id` selects the NACA airfoil definition. Its `c`, `t`, `p`, and `m` values specify the chord length, thickness, maximum-camber location, and maximum camber, respectively.
 Additional details on this specification can be found in [NACA airfoil](https://en.wikipedia.org/wiki/NACA_airfoil).
 
 - `slip` applies a slip boundary to the surface of the patch if true and a no-slip boundary condition to the surface if false.
 
-- For STL/OBJ geometry (geometry 5 or 12), set `model_id` to index into the `stl_models` array and specify `model_filepath`, `model_scale`, `model_translate`, and `model_threshold` on that entry.
+- For STL/OBJ geometry, use `model_id` to select the corresponding `stl_models` entry, where the file, scale, translation, and winding-number threshold are configured.
 
-- `moving_ibm` sets the method by which movement will be applied to the immersed boundary. Using 0 will result in no movement. Using 1 will result 1-way coupling where the boundary moves at a constant rate and applied forces to the fluid based upon its own motion. In 1-way coupling, the fluid does not apply forces back onto the IB. Using 2 will result in 2-way coupling, where the boundary pushes on the fluid and the fluid pushes back on the boundary via pressure and viscous forces. If external forces are applied, the boundary will also experience those forces.
+- `moving_ibm` sets the method by which movement is applied to the immersed boundary. `0` keeps it fixed; `1` applies one-way prescribed motion; `2` applies two-way coupling, including pressure and viscous forces from the fluid.
 
 - `vel(i)` is the initial linear velocity of the IB in the x, y, z direction for i=1, 2, 3. When `moving_ibm` equals 2, this velocity is just the starting speed of the object, which will then accelerate due to external forces. If `moving_ibm` equals 1, then this is constant if it is a number, or can be described analytically with an expression.
 
 - `angular_vel(i)` is the initial angular velocity of the IB about the x, y, z axes for i=1, 2, 3 in radians per second. When `moving_ibm` equals 2, this rotation rate is just the starting rate of the object, which will then change due to external torques. If `moving_ibm` equals 1, then this is constant if it is a number, or can be described analytically with an expression.
 
-  Moving-IB analytic expressions use the same Python syntax and error-reporting as IC patch expressions (see the "Analytical Definition of Primitive Variables" section above).
+- `coefficient_of_restitution` is a number from 0 (exclusive) to 1 (inclusive) describing collision elasticity: 0 is perfectly inelastic and 1 is perfectly elastic.
 
-- `kin_model = 1` prescribes hinged flapping kinematics at run time (no analytic expressions, so the binary is shared across parameter values): roll \f$\phi\f$ about the lab \f$x\f$ axis through `kin_hinge` and pitch \f$\theta\f$ about the body spanwise (\f$y\f$) axis through the hinge, composed as \f$R = R_x(\phi) R_y(\theta)\f$. With \f$\tau = t - t_0\f$ and amplitude envelope \f$A(\tau)\f$ (0 before onset, raised cosine over `kin_ramp`, then 1): \f$\phi = A \phi_0 \sin(2\pi f \tau)\f$, \f$\theta = \theta_m + A \theta_0 \sin(2\pi f \tau + \psi)\f$. The centroid follows \f$x_c = x_h + R\,\mathbf{r}_\mathrm{off}\f$ and the ghost-cell velocities use the lab-frame angular velocity \f$\dot\phi \mathbf{e}_x + \dot\theta R_x(\phi)\mathbf{e}_y\f$. Set the initial `x[y,z]_centroid` and `angles` consistently with \f$t = 0\f$ so pre-process marks the body in the right place.
-
-- `kin_model = 2` is the smoothed linear pitch-ramp-and-hold of the AIAA low-Reynolds-number canonical cases (Eldredge et al. 2009, Ol et al. 2010) about the hinge, with no roll: \f$\theta(t) = \theta_m + \frac{\theta_0}{2}\left[1 + \frac{1}{a t_p}\log\frac{\cosh(a\tau)}{\cosh(a(\tau - t_p))}\right]\f$, \f$\tau = t - t_0\f$, \f$t_p = \theta_0/\Omega\f$, so the angle rises from `kin_theta_mean` by `kin_theta0` at nominal rate `kin_pitch_rate` starting at `kin_t0`, smoothed by `kin_smooth`. The same hinge, offset and centroid conventions as `kin_model = 1` apply.
-  Available variables: `x` (`x_cc(i)`), `y` (`y_cc(j)`), `z` (`z_cc(k)`), `t` (current simulation time), and `r` (the IB patch radius).
-  The same intrinsic functions and `pi` constant apply; bare `e` is not available.
-
-- `coefficient_of_restitution` is a number from 0 (exclusive) to 1 (inclusive) describing how elastic IB collisions are. 0 is for perfectly inelastic collisions while 1 is for perfectly elastic collisions.
-
-- `collision_model` is an integer to select the collision model being used for IB collisions. Using 0 disables collisions and collision checking. 1 enables the soft-sphere collision model, where all IBs must be circles or sphere and those IBs can collide with each other as well as walls.
+- `collision_model` selects the IB collision model. `0` disables collision checking; `1` enables soft-sphere collisions, for circular or spherical IBs and walls.
 
 - `collision_time` is approximately the amount of simulation time used to resolve collisions. This is handled by modifying the spring constant used to apply collision forces.
 
-- `collision_temporal_resolution` restricts the adaptive time step (`cfl_adap_dt`) to at most `collision_time / collision_temporal_resolution` while any collision is occurring, so that each collision is resolved with at least that many time steps. Pairing it with `ramp_ratio` limits how quickly the time step grows back once the collision ends.
+- `collision_temporal_resolution` limits a CFL-adaptive step to `collision_time / collision_temporal_resolution` while a collision is active, resolving each collision with at least that many steps. Pair it with `ramp_ratio` to limit the recovery rate after contact ends.
 
 - `ib_coefficient_of_friction` is the coefficient of friction used in IB collisions.
 
@@ -456,13 +443,14 @@ A particle cloud is a compact specification of a bed of identical circular (2D) 
 | `cloud_geometry`  | Integer | Shape of the cloud region. |
 | `shell_inner_radius` | Real | Inner radius for hemisphere-shell clouds (`cloud_geometry = 2`). |
 | `shell_outer_radius` | Real | Outer radius for hemisphere-shell clouds (`cloud_geometry = 2`). |
+| `shell_axis`      | Integer | Axis the hemisphere-shell cloud opens toward (`cloud_geometry = 2`). |
 | `moving_ibm`      | Integer | Motion flag applied to every particle (see `patch_ib(j)%%moving_ibm`). |
 | `seed`            | Integer | Random seed for reproducible placement (used by `packing_method = 1`). |
 | `packing_method`  | Integer | Algorithm used to place the particles. |
 
 - `cloud_geometry` selects the cloud region:
   - `1` (box) uses `x[y,z]_centroid` and `length_x[y,z]` to define the region.
-  - `2` uses `x[y,z]_centroid`, `shell_inner_radius`, and `shell_outer_radius` to define a half-annulus in 2D and a hemisphere shell in 3D. Particle centres are sampled between `shell_inner_radius + radius` and `shell_outer_radius - radius`, and the flat plane is kept clear by one particle radius. The flat face is fixed at `y_centroid` in 2D and `z_centroid` in 3D; the filled region opens toward positive `y` in 2D and positive `z` in 3D. The full shell extent (`x[y,z]_centroid +/- shell_outer_radius` on the open side, and one particle radius of clearance on the flat-face side) must lie inside the computational domain; a hemisphere shell also requires at least two dimensions (`n > 0`).
+  - `2` uses `x[y,z]_centroid`, `shell_inner_radius`, `shell_outer_radius`, and `shell_axis` to define a half-annulus in 2D and a hemisphere shell in 3D. Particle centres are sampled between `shell_inner_radius + radius` and `shell_outer_radius - radius`, and the flat plane is kept clear by one particle radius. `shell_axis` (`1`=x, `2`=y, `3`=z; default `3`) selects which axis the shell opens toward from its flat face at that axis's centroid; in 2D there is no z-axis, so any value other than `1` opens toward `+y` (matching the fixed behavior before `shell_axis` existed). The open axis needs one particle radius of clearance on its flat-face side and the full `shell_outer_radius` on its open side; the other axis (2D) or two axes (3D) need the full shell extent (`centroid +/- shell_outer_radius`) inside the domain. A hemisphere shell also requires at least two dimensions (`n > 0`).
 - `packing_method` selects how the `num_particles` are positioned within the cloud region:
   - `1` (rejection sampling) draws random positions and rejects any that violate `min_spacing`, producing a disordered bed. `seed` makes the placement reproducible.
   - `2` (lattice) places the particles on the optimally dense lattice for the geometry — a triangular lattice in 2D and a face-centered cubic lattice in 3D. The lattice spacing is derived from the particle density (`num_particles` over the region area/volume); if that spacing is below the required `2*radius + min_spacing`, the region is too dense and the run aborts.
@@ -513,6 +501,31 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 > Setting `gamma = 1.4` for air is a common mistake; the correct value is `1.0 / (1.4 - 1.0) = 2.5`.
 > See @ref sec-stored-forms and @ref sec-material-values in the Equations reference for the full table.
 
+#### JWL Reaction Model
+
+| Parameter        | Type    | Description                                                        |
+| ---:             | :----:  |          :---                                                      |
+| `jwl_wrt`        | Logical | Write JWL temperature, product fraction, and reaction progress.    |
+| `jwl_afterburn`  | Logical | Enable JWL afterburn energy release.                               |
+| `jwl_ab_model`   | Integer | JWL afterburn rate model.                                          |
+| `jwl_q_ab`       | Real    | Afterburn energy release per unit mass.                            |
+| `jwl_ab_tau`     | Real    | Afterburn rate time constant (used when `jwl_ab_model = 1`).       |
+| `jwl_ab_A`       | Real    | Afterburn Arrhenius-form rate pre-exponential factor.              |
+| `jwl_ab_theta`   | Real    | Afterburn Arrhenius-form activation temperature.                   |
+| `jwl_ab_n`       | Real    | Afterburn Arrhenius-form pressure exponent.                        |
+| `jwl_reactive`   | Logical | Enable JWL++ pressure-driven reactive burn.                        |
+| `jwl_G`          | Real    | JWL++ reactive-burn rate constant.                                 |
+| `jwl_b_exp`      | Real    | JWL++ reactive-burn pressure exponent.                             |
+| `prog_burn`      | Logical | Enable kinematic JWL program burn.                                 |
+| `pb_D_cj`        | Real    | Programmed burn Chapman-Jouguet detonation velocity.               |
+| `pb_width`       | Real    | Programmed burn reaction zone width.                               |
+| `pb_x_det`       | Real    | Programmed burn detonation point x-coordinate.                     |
+| `pb_y_det`       | Real    | Programmed burn detonation point y-coordinate.                     |
+| `pb_z_det`       | Real    | Programmed burn detonation point z-coordinate.                     |
+| `pb_t_det`       | Real    | Programmed burn detonation initiation time.                        |
+
+`jwl_afterburn`, `jwl_reactive`, and `prog_burn` are independent burn models that may be combined; `jwl_afterburn` and `jwl_reactive` each add their own progress equation to the conservative state.
+
 ### 6. Simulation Algorithm {#sec-simulation-algorithm}
 
 See @ref equations "Equations" for the mathematical models these parameters control.
@@ -522,7 +535,7 @@ See @ref equations "Equations" for the mathematical models these parameters cont
 | `bc_[x,y,z]%%beg[end]`     | Integer | Beginning [ending] boundary condition in the $[x,y,z]$-direction (negative integer, see table [Boundary Conditions](#boundary-conditions)) |
 | `bc_[x,y,z]%%vb[1,2,3]`‡   | Real    | Velocity in the (x,1), (y, 2), (z,3) direction applied to `bc_[x,y,z]%%beg` |
 | `bc_[x,y,z]%%ve[1,2,3]`‡   | Real    | Velocity in the (x,1), (y, 2), (z,3) direction applied to `bc_[x,y,z]%%end` |
-| `model_eqns`               | Integer | Multicomponent model: [1] \f$\Gamma/\Pi_\infty\f$; [2] 5-equation; [3] 6-equation |
+| `model_eqns`               | Integer | Flow model: [1] gamma-law; [2] 5-equation; [3] 6-equation |
 | `alt_soundspeed` *         | Logical | Alternate sound speed and \f$K \nabla \cdot u\f$ for 5-equation model |
 | `adv_n`   	               | Logical | Solving directly for the number density (in the method of classes) and compute void fraction from the number density |
 | `mpp_lim`	                 | Logical | Mixture physical parameters limits |
@@ -548,8 +561,8 @@ See @ref equations "Equations" for the mathematical models these parameters cont
 | `flux_lim`                 | Integer | Flux limiter for post-process: [1] minmod; [2] MUSCL; [3] OSPRE; [4] SUPERBEE |
 | `ic_eps`                   | Real    | Interface compression threshold (default: 1e-4) |
 | `ic_beta`                  | Real    | Interface compression sharpness parameter (default: 1.6) |
-| `riemann_solver`           | Integer | Riemann solver algorithm: [1] HLL*; [2] HLLC; [3] Exact*; [4] HLLD (MHD or hypoelasticity) |
-| `hll_u_interface`          | Logical | HLL Method 2 (u-interface) for volume fraction advection (default F) |
+| `riemann_solver`           | Integer | Riemann solver algorithm: [1] HLL; [2] HLLC; [4] HLLD (MHD or hypoelasticity); [5] Lax-Friedrichs |
+| `hll_u_interface`          | Logical | HLL volume-fraction advection in interface-velocity form |
 | `low_Mach`                 | Integer | Low Mach number correction for HLLC Riemann solver: [0] None; [1] Pressure (\cite Chen22); [2] Velocity (\cite Thornber08)	 |
 | `avg_state`	               | Integer | Averaged state evaluation method: [1] Roe average*; [2] Arithmetic mean  |
 | `wave_speeds`              | Integer | Wave-speed estimation: [1] Direct (\cite Batten97); [2] Pressure-velocity* (\cite Toro09)	 |
@@ -571,9 +584,9 @@ See @ref equations "Equations" for the mathematical models these parameters cont
 | `surface_tension`          | Logical | Activate surface tension |
 | `viscous`                  | Logical | Activate viscosity |
 | `hypoelasticity`           | Logical | Activate hypoelasticity* |
-| `riemann_hypo_ADC`         | Logical | Enable hypo anti-diffusion correction for HLLC/HLLD (default F) |
-| `ADC_kappa`                | Real    | ADC sensor scaling parameter (default 1.0) |
-| `hypo_hll_interface_rhs`   | Logical | HLL uses interface-consistent hypo RHS (default F) |
+| `riemann_hypo_ADC`         | Logical | Enable hypoelastic anti-diffusion correction for HLLC/HLLD |
+| `ADC_kappa`                | Real    | Hypoelastic ADC sensor scale (default 1.0) |
+| `hypo_hll_interface_rhs`   | Logical | Use the interface-consistent hypoelastic HLL right-hand side |
 | `igr`                      | Logical | Enable solution via information geometric regularization (IGR) \cite Cao24 |
 | `igr_order`                | Integer | Order of reconstruction for IGR [3,5] |
 | `alf_factor`               | Real    | Alpha factor for IGR entropic pressure (default 10) |
@@ -607,7 +620,7 @@ Tangential velocities require viscosity, `weno_avg = T`, and `bc_[x,y,z]%%end = 
 The difference of the two models is assessed by (\cite Schmidmayer20).
 Note that some code parameters are only compatible with 5-equation model.
 
-- `alt_soundspeed` activates the source term in the advection equations for the volume fractions, \f$K\nabla\cdot \underline{u}\f$, that regularizes the speed of sound in the mixture region when the 5-equation model is used. Requires exactly two fluid components (\f$K\f$ is a two-fluid closure).
+- `alt_soundspeed` activates the source term in the advection equations for the volume fractions, \f$K\nabla\cdot \underline{u}\f$, that regularizes the speed of sound in the mixture region when the 5-equation model is used.
 The effect and use of the source term are assessed by \cite Schmidmayer20.
 
 - `adv_n` activates the direct computation of number density by the Riemann solver instead of computing number density from the void fraction in the method of classes.
@@ -651,13 +664,10 @@ Setting `muscl_eps = 0` gives textbook limiter behavior where limiters activate 
 
 - `int_comp` activates interface compression using [1] THINC or [2] MTHINC (default off) used in variable reconstruction, with control parameters (`ic_eps`, and `ic_beta`).
 
-- `riemann_solver` specifies the choice of the Riemann solver that is used in simulation by an integer from 1 through 4.
-`riemann_solver = 1`, `2`, and `3` correspond to HLL, HLLC, and Exact Riemann solver, respectively (\cite Toro09).
+- `riemann_solver` accepts 1 (HLL), 2 (HLLC), 4 (HLLD), or 5 (Lax-Friedrichs). Value 3 is not supported.
 `riemann_solver = 4` is the HLLD solver for MHD or hypoelasticity simulations. For MHD it resolves 5 of the full seven-wave structure of the MHD equations (\cite Miyoshi05).
 
-- `hll_u_interface`: Selects between two HLL discretizations of volume fraction advection (`riemann_solver = 1`):
-  - **Default** (``'F'``): \f$\partial_t \alpha_k + u\,\partial_x \alpha_k = 0\f$
-  - **u-interface** (``'T'``, consistent with HLLC): \f$\partial_t \alpha_k + \partial_x(\alpha_k\, u) = \alpha_k\,\partial_x u\f$
+- `hll_u_interface` selects the interface-velocity form of HLL volume-fraction advection (`riemann_solver = 1`). With its default (`F`), the advection uses \f$\partial_t \alpha_k + u\,\partial_x \alpha_k = 0\f$; with `T`, it uses the HLLC-consistent form \f$\partial_t \alpha_k + \partial_x(\alpha_k u) = \alpha_k\,\partial_x u\f$.
 
 - `low_Mach` specifies the choice of the low Mach number correction scheme for the HLLC Riemann solver. `low_Mach = 0` is default value and does not apply any correction scheme. `low_Mach = 1` and `2` apply the anti-dissipation pressure correction method (\cite Chen22) and the improved velocity reconstruction method (\cite Thornber08). This feature requires `model_eqns = 2` or `3`. `low_Mach = 1` works for `riemann_solver = 1` and `2`, but `low_Mach = 2` only works for `riemann_solver = 2`.
 
@@ -677,13 +687,9 @@ This option requires `weno_Re_flux` to be true because cell boundary values are 
 
 - `viscous` activates viscosity when set to ``'T'``. Requires `Re(1)` and `Re(2)` to be set.
 
-- `hypoelasticity` activates elastic stress calculations for fluid-solid interactions. Requires `G` to be set in `fluid_pp`, and `fd_order` to be set (1, 2, or 4). Compatible with HLL (`riemann_solver = 1`), HLLC (`riemann_solver = 2`), and HLLD (`riemann_solver = 4`). The Riemann solver choice determines how the elastic stress source term \f$\mathbf{S}^e\f$ is discretized:
-  - **HLL**: finite-difference velocity gradient (default), or interface-consistent velocity gradient when ``hypo_hll_interface_rhs = 'T'`` (matches HLLC).
-  - **HLLC**: interface-consistent velocity gradient from the Riemann solution.
-  - **HLLD**: dual-pass approach resolving the elastic wave structure. Requires 2D+ and exactly 2 fluid components.
-  - With hypoelastic HLLD, use characteristic boundary conditions (`bc_{x,y,z}%%beg/end` between -5 and -12) only where the domain boundary remains in a fluid region throughout the simulation. Keep material interfaces and solids out of the nearby cells used by the boundary calculation. A material present only at the numerical volume-fraction floor is allowed, even if it has nonzero `G`. These boundaries treat acoustic waves only. `alt_soundspeed` is supported.
+- `hypoelasticity` activates elastic stress calculations for fluid-solid interactions. It requires `fluid_pp(i)%%G` and `fd_order` (1, 2, or 4). It is compatible with HLL, HLLC, and HLLD; HLL uses finite-difference velocity gradients by default, or the interface-consistent form when ``hypo_hll_interface_rhs = 'T'``.
 
-- `riemann_hypo_ADC`: Enables anti-diffusion correction (ADC) for hypoelastic HLLC or HLLD. Blends the HLLC/HLLD flux locally toward the more diffusive HLL flux where a jump sensor (total normal stress, tangential velocity, and tangential stress) detects a strong contact or material interface, improving robustness and reducing interfacial overshoots. This trades contact and shear resolution for robustness where the sensor activates. `ADC_kappa` (default 1.0) scales the reference jump the sensor is normalized by; smaller values blend more toward HLL (more diffusive and robust). Off by default and recommended off: in MFC's tested hypoelastic cases, including strong shock-interface interactions, HLLD is stable and accurate without ADC. The option is a robustness fallback intended for regimes with intense shocks and intense shear at material interfaces.
+- `riemann_hypo_ADC` blends HLLC/HLLD locally toward HLL where its stress-and-shear sensor detects a strong interface. It increases robustness but diffuses contacts and shear. `ADC_kappa` scales that sensor; leave ADC disabled unless a validated case needs the robustness fallback.
 
 #### Boundary Condition Patches {#boundary-condition-patches}
 
@@ -759,9 +765,9 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `alpha_wrt(i)`          | Logical | Add the volume fraction of fluid $i$ to the database	|
 | `gamma_wrt`             | Logical | Add the specific heat ratio function to the database	|
 | `heat_ratio_wrt`        | Logical | Add the specific heat ratio to the database	|
-| `ib_force_wrt`          | Logical | Record the immersed-boundary force history to `D/ib_forces.dat` (default off) |
-| `ib_force_stride`       | Integer | Stride, in time steps, of the per-step immersed-boundary force record (default 1) |
-| `ib_state_wrt`          | Logical | Parameter to handle writing IB state on saves and outputting the state as a point mesh to SILO files. |
+| `ib_force_wrt`          | Logical | Record immersed-boundary force and torque history to `D/ib_forces.dat` |
+| `ib_force_stride`       | Integer | Time-step stride of the immersed-boundary force history (default 1) |
+| `ib_state_wrt`          | Logical | Write IB state and loads to a datafile at each time step |
 | `pi_inf_wrt`            | Logical | Add the liquid stiffness function to the database |
 | `pres_inf_wrt`          | Logical | Add the liquid stiffness to the formatted database	 |
 | `c_wrt`                 | Logical | Add the sound speed to the database	 |
@@ -773,6 +779,38 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `cf_wrt`                | Logical | Write color function field |
 | `chem_wrt_T`            | Logical | Write temperature field for chemistry output |
 | `fft_wrt`               | Logical | Enable FFT output |
+| `lso_filter`            | Logical | Apply a least-squares optimized (LSO) variable-weight Gaussian filter to conserved variables at each save step |
+| `lso_filter_wrt`        | Logical | Write LSO-filtered fields with an lso_ filename prefix alongside unfiltered data |
+| `lso_down_sample_factor`| Integer | Stride factor for coarsening the filtered output grid (1 = no coarsening). Must divide each active global and per-rank cell count. Reduced-grid post-processing requires shared parallel I/O; see @ref lso-filter-testing for supported layouts. |
+| `lso_stat_wrt`          | Logical | Write 11 filtered product blocks (11/21/33 scalar components in 1D/2D/3D). Requires `num_fluids=1`, `lso_filter_wrt=T`, `parallel_io=T` and `particles_lagrange=F`; particle products use IBM markers. |
+| `lso_R_gas`             | Real    | Specific gas constant [J/(kg·K)] for temperature reconstruction used in stat fields. Default 287.0 (dry air). |
+| `filter_sigma`          | Real    | Target Gaussian filter standard deviation in physical units |
+| `lso_n_passes_x`        | Integer | Number of filter passes in x (auto-computed by toolchain from `filter_sigma` and grid spacing) |
+| `lso_n_passes_y`        | Integer | Number of filter passes in y (auto-computed) |
+| `lso_n_passes_z`        | Integer | Number of filter passes in z (auto-computed) |
+| `lso_a_x`               | Real    | Per-pass 9-point stencil coefficients in x (5 × lso_max_passes, auto-computed) |
+| `lso_a_y`               | Real    | Per-pass 9-point stencil coefficients in y (5 × lso_max_passes, auto-computed) |
+| `lso_a_z`               | Real    | Per-pass 9-point stencil coefficients in z (5 × lso_max_passes, auto-computed) |
+| `lso2_n_passes_x`       | Integer | Stage-2 (coarse grid) passes in x, auto-computed when `lso_filter_wrt=T`, `lso_down_sample_factor>1` and `filter_sigma` exceeds 1.05 × σ₁; σ₁ = 8 × stride × largest active fine-grid spacing |
+| `lso2_n_passes_y`       | Integer | Stage-2 passes in y (auto-computed) |
+| `lso2_n_passes_z`       | Integer | Stage-2 passes in z (auto-computed) |
+| `lso2_a_x`              | Real    | Stage-2 per-pass stencil coefficients in x (auto-computed) |
+| `lso2_a_y`              | Real    | Stage-2 per-pass stencil coefficients in y (auto-computed) |
+| `lso2_a_z`              | Real    | Stage-2 per-pass stencil coefficients in z (auto-computed) |
+| `lso_closure_wrt`       | Logical | Write R_sg, Q_T, E_ku, W_tau_u, R_mu_sg, R_lam_sg, T_tilde and Favre velocity with the lso_closure_ variable prefix in the ordinary post-process database. Requires `lso_filter_wrt=T`, `lso_stat_wrt=T`, one calorically perfect ideal or stiffened gas, and no chemistry. Downsampling is not required. See @ref lso-filter-testing for acceptance limits. |
+| `lso_pp_filter`         | Logical | Apply an additional filter to saved in-situ filtered data; requires `lso_filter_wrt=T`. Wide targets use two same-grid cascades. Matching statistical and flow filter widths remains a production requirement; see @ref lso-filter-testing. |
+| `lso_filter_sigma_in`   | Real    | Toolchain-only input (not forwarded to Fortran): Gaussian sigma (physical units) already applied to the input data. Defaults to the in-situ width (`filter_sigma`, or d_p/2) when reading filtered data (`lso_filter_wrt=T`), and to 0 when reading original data (`lso_filter_wrt=F`). The toolchain sizes the post_process pass for sqrt(target² − in²) |
+| `lso_filter_sigma_target`| Real   | Toolchain-only input: target Gaussian sigma (physical units) for the post_process filter; must be &gt; `lso_filter_sigma_in` |
+| `lso_pp_n_passes_x`     | Integer | Number of post-process filter passes in x |
+| `lso_pp_n_passes_y`     | Integer | Number of post-process filter passes in y |
+| `lso_pp_n_passes_z`     | Integer | Number of post-process filter passes in z |
+| `lso_pp2_n_passes_[x,y,z]` | Integer | Auto-computed: stage-2 post-process pass counts, non-zero when a wide target is split across two cascades |
+| `lso_pp2_a_[x,y,z]`     | Real    | Auto-computed: stage-2 post-process per-pass stencil coefficients |
+| `lso_pp_a_x`            | Real    | Post-process per-pass stencil coefficients in x (5 × lso_max_passes) |
+| `lso_pp_a_y`            | Real    | Post-process per-pass stencil coefficients in y (5 × lso_max_passes) |
+| `lso_pp_a_z`            | Real    | Post-process per-pass stencil coefficients in z (5 × lso_max_passes) |
+| `lso_mu`                | Real    | Dynamic viscosity [Pa·s] for viscous stress computation in stat fields. Default 0 (inviscid). |
+| `fluid_pp(i)%%k_therm`  | Real    | Thermal conductivity used for heat-flux closure fields; see Fluid Materials. |
 | `sim_data`              | Logical | Write interface and energy data files (post_process) |
 | `down_sample`           | Logical | Enable output downsampling |
 | `fd_order`              | Integer | Order of finite differences for computing the vorticity and the numerical Schlieren function [1,2,4] |
@@ -821,42 +859,14 @@ If `file_per_process` is true, then pre_process, simulation, and post_process mu
 
 - ``[variable's name]_wrt`` activates the output of each specified variable into the database.
 
-- `schlieren_alpha(i)` specifies the intensity of the numerical Schlieren of $i$-th component. It must be specified for every fluid when `schlieren_wrt` is enabled.
+- `schlieren_alpha(i)` specifies the intensity of the numerical Schlieren of $i$-th component.
 
 - `fd_order` specifies the order of the finite difference scheme used to compute the vorticity from the velocity field and the numerical schlieren from the density field using an integer of 1, 2, and 4.
 `fd_order = 1`, `2`, and `4` correspond to the first, second, and fourth-order finite difference schemes.
 
 - `probe_wrt` activates the output of state variables at coordinates specified by `probe(i)%[x;y,z]`.
 
-- `ib_state_wrt` is used to trigger post-processing of the IB state to be written out as a point mesh in the SILO files. When no IBs are moving, it also triggers force and torque calculation so that those values may be written to the output state files.
-
-- `ib_force_wrt` records the force, torque and kinematics of every immersed boundary in a single shared text file, `D/ib_forces.dat`, described below. It is off by default: the history is written every step, which at large rank counts is a cost a run should opt into rather than inherit. `ib_force_stride` writes only every N-th step, for runs long enough that the history itself becomes large.
-
-#### Immersed-boundary force history {#sec-ib-force-history}
-
-`D/ib_forces.dat` holds one fixed-width record per body per written step. Its twenty columns are
-
-| Columns | Quantity |
-| ---:    | :---     |
-| 1       | body id (the global `patch_ib` index) |
-| 2       | time |
-| 3–5     | force, x/y/z |
-| 6–8     | torque, x/y/z |
-| 9–11    | velocity, x/y/z |
-| 12–14   | angular velocity, x/y/z |
-| 15–17   | angles about x/y/z |
-| 18–20   | centroid, x/y/z |
-
-The file carries no header line, because every record sits at a computed byte offset and a header would shift them all. Each record is exactly 353 bytes including its newline (`I10` followed by nineteen `1X,ES17.9E3` fields), so the whole file loads with `numpy.loadtxt` and a single body or step can be read without scanning it:
-
-```
-row    = t_step / ib_force_stride - t_step_start / ib_force_stride - 1
-offset = (row * num_ibs + ib_id - 1) * 353
-```
-
-Rows count from the first step the run records, not from `t_step`, so row 0 is the first row of the file whether the run starts at step 0 or resumes from a restart. The first recorded step is the first multiple of `ib_force_stride` after `t_step_start`; `t_step_start` itself is skipped, because at that point the force is still the one from before the run began.
-
-Rows are written in global body-id order, so the file is byte-identical however the domain is decomposed, and no merge step is needed after a parallel run.
+- `ib_state_wrt` activates the output of data specified by patch_ib(i)%force(:) (and torque, vel, angular_vel, angles, [x,y,z]_centroid) into a single binary datafile for all IBs at all timesteps. During post_processing, this file is converted into separate time histories for each IB.
 
 - `output_partial_domain` activates the output of part of the domain specified by `[x,y,z]_output%%beg` and `[x,y,z]_output%%end`.
 This is useful for large domains where only a portion of the domain is of interest.
@@ -954,6 +964,8 @@ Details of the transducer acoustic source model can be found in \cite Maeda17.
 | `Ca`               | Real    | Cavitation number |
 | `Web`              | Real    | Weber number |
 | `Re_inv`           | Real    | Inverse Reynolds number |
+| `pref`             | Real    | Reference pressure for bubble models |
+| Reference density  | Real    | Reference density for bubble models |
 | `fluid_rho`        | Real    | Reference fluid density |
 | `bub_pp%%R0ref`*†‡  | Real    | Reference bubble radius |
 | `bub_pp%%p0ref`*†‡  | Real    | Reference pressure |
@@ -1037,33 +1049,23 @@ When ``polytropic = 'F'``, the gas compression is modeled as non-polytropic due 
 
 #### 9.2 Volume-Averaged Bubble Model
 
-| Parameter             | Type    | Description                                                    |
-| ---:                  | :---:   | :---                                                           |
-| `bubbles_lagrange`    | Logical | Lagrangian subgrid bubble model switch                         |
-| `nBubs_glb`           | Integer | Global number of bubbles                                       |
-| `solver_approach`     | Integer | 1: One-way coupling, 2: two-way coupling                       |
-| `cluster_type`        | Integer | Method to find p_inf                                           |
-| `pressure_corrector`  | Logical | Cell pressure correction term                                  |
-| `smooth_type`         | Integer | Smoothing function. 1: Gaussian, 2:Delta 3x3                   |
-| `heatTransfer_model`  | Logical | Activates the interface heat transfer model                    |
-| `massTransfer_model`  | Logical | Activates the interface mass transfer model                    |
-| `write_bubbles`       | Logical | Write files to track the bubble evolution each time step       |
-| `write_bubbles_stats` | Logical | Write the maximum and minimum radius of each bubble            |
-| `write_void_evol`     | Logical | Write stats about the void fraction evolution over time        |
-| `epsilonb`            | Real    | Standard deviation scaling for the gaussian function           |
-| `charwidth`           | Real    | Domain virtual depth (z direction, for 2D simulations)         |
-| `charNz`              | Integer | Number of cells in the virtual depth direction                 |
-| `valmaxvoid`          | Real    | Maximum void fraction permitted                                |
-| `vel_model`           | Integer | Model for translational motion (default 0, disabled)           |
-| `drag_model`          | Integer | Model for drag force (default 0, disabled)                     |
-| `gravity_force`       | Logical | Enable gravity force (default false)                           |
-| `pressure_force`      | Logical | Enable pressure force (default true)                           |
-| `input_path`          | String  | Path to bubble input file (default: `./input/lag_bubbles.dat`) |
-| `kahan_summation`     | Logical | Use Kahan compensated summation when accumulating the void fraction |
+| Parameter             | Type    | Description                                               |
+| ---:                  | :---:   | :---                                                      |
+| `bubbles_lagrange`    | Logical | Lagrangian subgrid bubble model switch                    |
+| `nBubs_glb`           | Integer | Global number of bubbles                                  |
+| `solver_approach`     | Integer | 1: One-way coupling, 2: two-way coupling                  |
+| `cluster_type`        | Integer | Method to find p_inf                                      |
+| `pressure_corrector`  | Logical | Cell pressure correction term                             |
+| `smooth_type`         | Integer | Smoothing function. 1: Gaussian, 2:Delta 3x3              |
+| `heatTransfer_model`  | Logical | Activates the interface heat transfer model               |
+| `massTransfer_model`  | Logical | Activates the interface mass transfer model               |
+| `write_bubbles`       | Logical | Write files to track the bubble evolution each time step  |
+| `write_bubbles_stats` | Logical | Write the maximum and minimum radius of each bubble       |
+| `epsilonb`            | Real    | Standard deviation scaling for the gaussian function      |
+| `charwidth`           | Real    | Domain virtual depth (z direction, for 2D simulations)    |
+| `valmaxvoid`          | Real    | Maximum void fraction permitted                           |
 
-- `nBubs_glb` Total number of bubbles. Their initial conditions are read from the file given by `input_path`.
-
-- `input_path` Path to the bubble input file (default `./input/lag_bubbles.dat`). Each row specifies the initial state of one bubble, with columns `xPosition/x0  yPosition/x0  zPosition/x0  xVel/c0  yVel/c0  zVel/c0  radius/x0  interfaceVelocity/c0`. See `examples/3D_lagrange_shbubcollapse/input/lag_bubbles.dat` for a checked-in example, or the other Lagrange example cases (e.g. `examples/2D_lagrange_bubblescreen/case.py`), which generate this file programmatically.
+- `nBubs_glb` Total number of bubbles. Their initial conditions need to be specified in the ./input/lag_bubbles.dat file. See the example cases for additional information.
 
 - `solver_approach` Specifies the Euler-Lagrange coupling method: [1] enables a one-way coupling approach, where the bubbles do not influence the Eulerian field. [2] activates the two-way coupling approach based on \cite Maeda18, where the effect of the bubbles is added in the Eulerian field as source terms.
 
@@ -1082,6 +1084,19 @@ When ``polytropic = 'F'``, the gas compression is modeled as non-polytropic due 
     - `gravity_force` (default false) enables the body force \f$\underline{F}_g = m_b\,\underline{g}\f$, with \f$\underline{g}\f$ the acceleration set by the body-force parameters.
 
 - `kahan_summation` uses Kahan compensated summation when smearing the bubble contributions onto the Eulerian void fraction, reducing the round-off sensitivity of the accumulation to the summation order. It is not compatible with `--mixed` precision builds.
+
+#### Euler–Lagrange particles
+
+`particles_lagrange` enables Euler–Lagrange particle tracking. The particle material and collision inputs are:
+
+| Parameter | Type | Description |
+| ---: | :---: | :--- |
+| `particle_pp%%rho0ref_particle` | Real | Reference particle density |
+| `particle_pp%%cp_particle` | Real | Particle specific heat capacity |
+| `particle_pp%%E_col` | Real | Particle Young's modulus for contact |
+| `particle_pp%%nu_col` | Real | Particle Poisson ratio for contact |
+| `particle_pp%%cor_col` | Real | Particle coefficient of restitution |
+| `particle_pp%%ksp_col` | Real | Collision spring-stiffness multiplier |
 
 ### 10. Velocity Field Setup {#sec-velocity-field-setup}
 
@@ -1146,14 +1161,13 @@ This parameter enables the use of true `pi_\infty` in bubble dynamics models whe
 
 ### 13. Body Forces
 
-| Parameter            | Type    | Description                                                              |
-| ---:                 | :---:   | :---                                                                     |
-| `bf_x[y,z]`          | Logical | Enable body forces in the x[y,z] direction                               |
-| `k_x[y,z]`           | Real    | Magnitude of oscillating acceleration                                    |
-| `w_x[y,z]`           | Real    | Frequency of oscillating acceleration                                    |
-| `p_x[y,z]`           | Real    | Phase shift of oscillating acceleration                                  |
-| `g_x[y,z]`           | Real    | Magnitude of background acceleration                                     |
-| `bf_spatial_support` | Logical | Enable spatially supported body force (Wei & Freund, JFM 2005)           |
+| Parameter         | Type    | Description                                |
+| ---:              | :---:   | :---                                       |
+| `bf_x[y,z]`       | Logical | Enable body forces in the x[y,z] direction |
+| `k_x[y,y]`        | Real    | Magnitude of oscillating acceleration      |
+| `w_x[y,z]`        | Real    | Frequency of oscillating acceleration      |
+| `p_x[y,z]`        | Real    | Phase shift of oscillating acceleration    |
+| `g_x[y,z]`        | Real    | Magnitude of background acceleration       |
 
 `k_x[y,z]`, `w_x[y,z]`, `p_x[y,z]`, and `g_x[y,z]` define an oscillating acceleration in the `x[y,z]` direction with the form
 
@@ -1213,9 +1227,7 @@ Note: For relativistic flow, the conservative and primitive densities are differ
 | `rburn%%n`         | Real    | Reactive-burn pressure-drive exponent               |
 | `rburn%%ta`        | Real    | Reactive-burn activation temperature [K] (0 = off)  |
 
-- `cont_damage` activates the continuum damage model for hypoelastic solid materials (requires `hypoelasticity = T`; HLL/HLLC only). Damage is produced by tensile maximum principal Cauchy stress beyond `tau_star` (\f$\geq 0\f$) at rate `(alpha_bar*(sigma_1 - tau_star))**cont_damage_s` and is transported with the damageable-solid partial mass; see @ref equations for the model statement (\cite Cao19; \cite Spratt24). `tau_star`, `cont_damage_s` (\f$> 0\f$), and `alpha_bar` (\f$\geq 0\f$) are empirically determined.
-
-- `reactive_burn` converts a "reactant" fluid into a "product" fluid (`num_fluids = 2`, ``chemistry = 'F'``) via a programmed pressure burn `dlambda/dt = rburn%%k (1 - lambda) ((p - rburn%%pign)/rburn%%pref)^rburn%%n`. The two fluids share the same `gamma`/`pi_inf` and differ only in `qv`, so the conversion releases `qv` through the mixture EOS — a reactive-Euler/ZND detonation model on the diffuse-interface framework. It runs on the 5-equation (`model_eqns = 2`) and 6-equation (`model_eqns = 3`) multi-fluid models. Setting `rburn%%ta > 0` multiplies the rate by an Arrhenius factor `exp(-rburn%%ta/T)`, where `T` is the reactant phasic temperature, giving temperature-driven ignition instead of a pure pressure switch.
+- `cont_damage` activates continuum damage model for solid materials. Requires `tau_star`, `cont_damage_s`, and `alpha_bar` to be set (empirically determined) (\cite Cao19).
 
 ### 16. Cylindrical Coordinates
 
@@ -1264,52 +1276,11 @@ MFC generates and compiles the mechanism's Fortran routines itself. Supported me
 | `bc_[x,y,z]%%Twall_in`         | Real    | Temperature [K] of the entrance isothermal wall.                            |
 | `bc_[x,y,z]%%Twall_out`        | Real    | Temperature [K] of the exit isothermal wall.                                |
 
-This boundary condition can be used for fixed-temperature (isothermal) walls at the domain extremities. It requires a heat-conduction path so the wall flux can be evaluated: either a reacting flow with ``chemistry = 'T'`` and ``chem_params%%diffusion = 'T'``, or Fourier conduction with ``fluid_pp(i)%%k_therm`` > 0. The corresponding domain boundary must be set to a slip wall (`bc_[x,y,z]%%[beg,end]` = -15) or a no-slip wall (`bc_[x,y,z]%%[beg,end]` = -16). With chemistry it evaluates both heat and species fluxes; with Fourier conduction it evaluates the heat flux.
+This boundary condition can be used for fixed-temperature (isothermal) walls at the domain extremities. It requires either reacting-flow transport (``chemistry = 'T'`` and ``chem_params%%diffusion = 'T'``) or Fourier conduction through a positive `fluid_pp(i)%%k_therm`. The boundary must be a slip wall (`bc_[x,y,z]%%[beg,end] = -15`) or no-slip wall (`bc_[x,y,z]%%[beg,end] = -16`). Chemistry supplies heat and species fluxes; Fourier conduction supplies the heat flux.
 
 
 
-### 19. Non-Newtonian (Herschel-Bulkley) Viscosity {#sec-non-newtonian}
-
-| Parameter                         | Type    | Description                                                          |
-| ---:                              | :----:  | :---                                                                 |
-| `fluid_pp(i)%%non_newtonian`      | Logical | Enable Herschel-Bulkley non-Newtonian viscosity for fluid \f$i\f$.  |
-| `fluid_pp(i)%%K`                  | Real    | Consistency index \f$K\f$.                                          |
-| `fluid_pp(i)%%nn`                 | Real    | Flow index \f$n\f$ (\f$n<1\f$ shear-thinning, \f$n>1\f$ shear-thickening). |
-| `fluid_pp(i)%%tau0`               | Real    | Yield stress \f$\tau_0\f$; set to 0 for pure power-law.             |
-| `fluid_pp(i)%%hb_m`               | Real    | Papanastasiou regularization parameter \f$m\f$; required when `tau0 > 0`. |
-| `fluid_pp(i)%%mu_min`             | Real    | Lower viscosity clamp \f$\mu_{\min}\f$.                              |
-| `fluid_pp(i)%%mu_max`             | Real    | Upper viscosity clamp \f$\mu_{\max}\f$ (required).                  |
-| `fluid_pp(i)%%mu_bulk`            | Real    | Reserved; non-Newtonian bulk viscosity is not yet supported. The validator rejects it on a non-Newtonian fluid; on a Newtonian fluid it is accepted and ignored. |
-
-The effective dynamic viscosity is computed from the Papanastasiou-regularized Herschel-Bulkley model:
-
-\f[
-\mu_{\rm eff}(\dot\gamma) = \frac{\tau_0}{\dot\gamma}\!\left(1 - e^{-m\,\dot\gamma}\right) + K\,\dot\gamma^{n-1},
-\qquad
-\dot\gamma = \sqrt{2\,D_{ij}D_{ij}},
-\f]
-
-where \f$D_{ij} = \frac{1}{2}(\partial_i u_j + \partial_j u_i)\f$ is the strain-rate tensor and \f$\dot\gamma\f$ is the scalar shear rate.
-The result is clamped to \f$[\mu_{\min},\,\mu_{\max}]\f$.
-
-Special cases:
-
-- `tau0 = 0`: pure power-law fluid, \f$\mu_{\rm eff} = K\,\dot\gamma^{n-1}\f$.
-- `tau0 = 0`, `nn = 1`: Newtonian fluid with constant viscosity \f$\mu = K\f$.
-- `tau0 > 0`, `nn = 1`: Bingham plastic.
-
-Usage notes:
-
-- Requires `viscous = T`. `fluid_pp(i)%%Re(1)` must be set (use `1.0/K` to register the fluid as viscous; the HB model overrides \f$\mu_{\rm eff}\f$ cell-by-cell). `fluid_pp(i)%%Re(2)` (bulk viscosity) must not be set for a non-Newtonian fluid.
-- `mu_max` is required; `mu_min` is inactive if omitted (no lower clamp applied).
-- Positivity requirements: `K`, `nn`, and `mu_max` must be positive; `mu_min` and `hb_m` must be positive when set; `tau0` must be non-negative.
-- Requires `model_eqns = 2` or `3` and is incompatible with `igr`.
-- Supported only with `riemann_solver = 1` (HLL) or `riemann_solver = 2` (HLLC).
-- The HB parameters (`K`, `nn`, `tau0`, `hb_m`, `mu_min`, `mu_max`, `mu_bulk`) may only be set on a fluid with `non_newtonian = T`; the validator rejects them otherwise.
-- All HB parameters are non-dimensional (scaled by \f$\rho_{\rm ref} U_{\rm ref} L_{\rm ref}\f$), so \f$1/\mu_{\rm eff}\f$ equals the local effective Reynolds number.
-- For cylindrical geometry (`cyl_coord = T`) the shear rate uses the grid-direction strain components; curvature corrections to \f$\dot\gamma\f$ are not yet included.
-
-### 20. GPU Performance (NVIDIA UVM)
+### 19. GPU Performance (NVIDIA UVM)
 
 | Parameter                  | Type    | Description                                              |
 | ---:                       | :---:   | :---                                                     |
@@ -1415,7 +1386,7 @@ This boundary condition can be used for subsonic inflow (`bc_[x,y,z]%[beg,end]` 
 | 18   | 2D Varcircle            | 2     | Y      | Requires `[x,y]_centroid`, `radius`, and `thickness` |
 | 19   | 3D Varcircle            | 3     | Y      | Requires `[x,y,z]_centroid`, `length_z`, `radius`, and `thickness` |
 | 20   | 2D Taylor-Green Vortex  | 2     | N      | Requires `[x,y]_centroid`, `length_x`, `length_y`, `vel(1)`, and `vel(2)` |
-| 21   | Model                   | 2 & 3 | Y      | Imports a Model (STL/OBJ). Requires `model_id`. |
+| 21   | Model                   | 2 & 3 | Y      | Imports a Model (STL/OBJ). Requires `model_filepath`. |
 
 The patch types supported by the MFC are listed in table [Patch Types](#patch-types).
 This includes types exclusive to one-, two-, and three-dimensional problems.
@@ -1437,14 +1408,14 @@ Boundary is at polar angle \f$\theta = \mathrm{atan2}(y - y_{\mathrm{centroid}},
 
 ### Immersed Boundary Patch Types {#immersed-boundary-patch-types}
 
-| #    | Name               | Dim.   | Notes                                             |
-| ---: | :----:             | :---:  | :---                                              |
-| 2    | 2D Circle          | 2      |                                                   |
-| 3    | 2D Rectangle       | 2      |                                                   |
-| 4    | 2D Airfoil         | 2      |                                                   |
-| 8    | 3D Sphere          | 3      |                                                   |
-| 10   | 3D Cylinder        | 3      | `length_x` sets the axial length of the cylinder. |
-| 11   | 3D Airfoil         | 3      |                                                   |
+| #    | Name               | Dim.   |
+| ---: | :----:             | :---   |
+| 2    | 2D Circle          | 2      |
+| 3    | 2D Rectangle       | 2      |
+| 4    | 2D Airfoil         | 2      |
+| 8    | 3D Sphere          | 3      |
+| 10   | 3D Cylinder        | 3      |
+| 11   | 3D Airfoil         | 3      |
 
 ### Acoustic Supports {#acoustic-supports}
 

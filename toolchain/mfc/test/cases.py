@@ -844,7 +844,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             alter_low_Mach_correction()
             if num_fluids == 1:
                 alter_eos()
-            alter_ib(dimInfo)
+            alter_ib(dimInfo, num_fluids=num_fluids)
             if len(dimInfo[0]) > 1:
                 alter_igr()
 
@@ -869,7 +869,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             if num_fluids == 1:
                 stack.push("Viscous", {"fluid_pp(1)%Re(1)": 0.0001, "dt": 1e-11, "patch_icpp(1)%vel(1)": 1.0, "viscous": "T"})
 
-                alter_ib(dimInfo, six_eqn_model=True, viscous=True)
+                alter_ib(dimInfo, num_fluids=num_fluids, six_eqn_model=True, viscous=True)
 
                 if len(dimInfo[0]) > 1:
                     alter_igr()
@@ -937,7 +937,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                     {"fluid_pp(1)%Re(1)": 0.001, "fluid_pp(1)%Re(2)": 0.001, "fluid_pp(2)%Re(1)": 0.001, "fluid_pp(2)%Re(2)": 0.001, "dt": 1e-11, "patch_icpp(1)%vel(1)": 1.0, "viscous": "T"},
                 )
 
-                alter_ib(dimInfo, six_eqn_model=True, viscous=True)
+                alter_ib(dimInfo, num_fluids=num_fluids, six_eqn_model=True, viscous=True)
 
                 if len(dimInfo[0]) > 1:
                     alter_igr()
@@ -1194,7 +1194,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             if ARG("rdma_mpi"):
                 cases.append(define_case_d(stack, "2 MPI Ranks -> RDMA MPI", {"rdma_mpi": "T"}, ppn=2))
 
-    def alter_ib(dimInfo, six_eqn_model=False, viscous=False):
+    def alter_ib(dimInfo, num_fluids, six_eqn_model=False, viscous=False):
         for slip in [True, False]:
             stack.push(
                 "IBM",
@@ -1329,6 +1329,39 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             )
 
         if len(dimInfo[0]) == 2 and not viscous:
+            if num_fluids == 1:
+                # Dynamic IBM pressure correction reconstructs a same-temperature ghost density. JWL exercises the
+                # state-dependent branch; the Mie-Gruneisen and Vinet reference curves have separate golden tests.
+                cases.append(
+                    define_case_d(
+                        stack,
+                        "IBM -> Moving Circle -> eos=jwl",
+                        {
+                            "ib": "T",
+                            "num_ibs": 1,
+                            "fd_order": 2,
+                            "patch_ib(1)%geometry": 2,
+                            "patch_ib(1)%x_centroid": 0.5,
+                            "patch_ib(1)%y_centroid": 0.5,
+                            "patch_ib(1)%radius": 0.1,
+                            "patch_ib(1)%moving_ibm": 2,
+                            "patch_ib(1)%vel(1)": 0.1,
+                            "patch_ib(1)%mass": 1.0,
+                            "fluid_pp(1)%eos": "jwl",
+                            "fluid_pp(1)%gamma": None,
+                            "fluid_pp(1)%qv": None,
+                            "fluid_pp(1)%cv": 1.0,
+                            "T_wrt": "T",
+                            "fluid_pp(1)%jwl_a": 6.0,
+                            "fluid_pp(1)%jwl_b": 0.15,
+                            "fluid_pp(1)%jwl_r1": 4.0,
+                            "fluid_pp(1)%jwl_r2": 1.0,
+                            "fluid_pp(1)%jwl_omega": 0.3,
+                            "fluid_pp(1)%jwl_rho0": 0.9,
+                            "fluid_pp(1)%jwl_t0": 1.0,
+                        },
+                    )
+                )
             cases.append(
                 define_case_d(
                     stack,
@@ -2382,6 +2415,22 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                         stack.push("qv_nonzero", {"fluid_pp(1)%qv": 0.01})
                         cases.append(define_case_d(stack, "", {}))
                         stack.pop()
+                        stack.push(
+                            "eos=mie_gruneisen",
+                            {
+                                "fluid_pp(1)%eos": "mie_gruneisen",
+                                "fluid_pp(1)%gamma": None,
+                                "fluid_pp(1)%pi_inf": None,
+                                "fluid_pp(1)%cv": 1.0,
+                                "fluid_pp(1)%mg_rho0": 24.0,
+                                "fluid_pp(1)%mg_c0": 1000.0,
+                                "fluid_pp(1)%mg_s": 1.5,
+                                "fluid_pp(1)%mg_gruneisen": 2.0,
+                                "fluid_pp(1)%mg_t0": 300.0,
+                            },
+                        )
+                        cases.append(define_case_d(stack, "", {}))
+                        stack.pop()
 
                     if len(dimInfo[0]) == 3 and couplingMethod == 2:
                         stack.push("Tracer Bubbles", {"lag_params%vel_model": 1, "fd_order": 2})
@@ -3334,8 +3383,16 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                 continue
 
             def modify_example_case(case: dict):
-                case["parallel_io"] = "F"
+                lso_parallel_io = any(case.get(key, "F") == "T" for key in ("lso_stat_wrt", "lso_pp_filter", "lso_closure_wrt"))
+                case["parallel_io"] = "T" if lso_parallel_io else "F"
                 case["file_per_process"] = "F"
+                lso_spacings = {}
+                if case.get("lso_filter", "F") == "T" and case.get("filter_sigma", 0.0) > 0.0:
+                    for direction, cells_key in (("x", "m"), ("y", "n"), ("z", "p")):
+                        cells = int(case.get(cells_key, 0) or 0)
+                        if direction == "x" or cells > 0:
+                            extent = case.get(f"{direction}_domain%end", 1.0) - case.get(f"{direction}_domain%beg", 0.0)
+                            lso_spacings[direction] = extent / (cells + 1)
                 if "t_step_stop" in case and case["t_step_stop"] >= 50:
                     case["t_step_start"] = 0
                     case["t_step_stop"] = 50
@@ -3356,6 +3413,18 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                         case["m"] = 25
                         case["n"] = 25
                         case["p"] = 25
+
+                if lso_spacings:
+                    scale = max(
+                        (case.get(f"{direction}_domain%end", 1.0) - case.get(f"{direction}_domain%beg", 0.0)) / (int(case.get(cells_key, 0) or 0) + 1) / spacing
+                        for direction, cells_key in (("x", "m"), ("y", "n"), ("z", "p"))
+                        if direction in lso_spacings and int(case.get(cells_key, 0) or 0) >= 0
+                        for spacing in (lso_spacings[direction],)
+                    )
+                    if scale > 1.0:
+                        case["filter_sigma"] *= scale
+                        if case.get("lso_filter_sigma_target", 0.0) > 0.0:
+                            case["lso_filter_sigma_target"] *= scale
 
             cases.append(define_case_f(name, case_path, [], {}, functor=modify_example_case))
 
@@ -4130,6 +4199,38 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         )
         cases.append(define_case_d(stack, "", {}))
         stack.pop()
+
+    def lso_filter_tests():
+        """Regression coverage for plain and IBM-normalized LSO output."""
+        dim2d = next(params for (dim_info, params) in get_dimensions() if dim_info[0] == ["x", "y"])
+        stack.push("2D", dim2d)
+        stack.push("LSO Filter", {"lso_filter": "T", "lso_filter_wrt": "T", "filter_sigma": 0.06, "fd_order": 1, "parallel_io": "F", "cons_vars_wrt": "T"})
+        cases.append(define_case_d(stack, "", {}))
+        cases.append(
+            define_case_d(
+                stack,
+                "IBM Circle",
+                {
+                    "n": 49,
+                    "ib": "T",
+                    "num_ibs": 1,
+                    "patch_ib(1)%geometry": 2,
+                    "patch_ib(1)%x_centroid": 0.5,
+                    "patch_ib(1)%y_centroid": 0.5,
+                    "patch_ib(1)%radius": 0.1,
+                    "patch_ib(1)%slip": "F",
+                    "patch_icpp(1)%vel(1)": 0.001,
+                    "patch_icpp(2)%vel(1)": 0.001,
+                    "patch_icpp(3)%vel(1)": 0.001,
+                    "filter_sigma": 0.1,
+                    "lso_down_sample_factor": 2,
+                },
+            )
+        )
+        stack.pop()
+        stack.pop()
+
+    lso_filter_tests()
 
     kernel_golden_tests()
 

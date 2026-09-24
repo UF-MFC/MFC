@@ -251,6 +251,16 @@ contains
                 eqn_idx%psi = sys_size + 1
                 sys_size = eqn_idx%psi
             end if
+
+            if (jwl_afterburn) then
+                eqn_idx%abn = sys_size + 1
+                sys_size = eqn_idx%abn
+            end if
+
+            if (jwl_reactive) then
+                eqn_idx%rxn = sys_size + 1
+                sys_size = eqn_idx%rxn
+            end if
         end if
 
         if (chemistry) then
@@ -410,6 +420,42 @@ contains
         dy_min = dflt_real
         dz_min = dflt_real
 
+        ! JWL reaction sources. The source terms are simulation-only, but the flags and
+        ! equation indices are shared so pre/post can read the same state layout.
+        jwl_afterburn = .false.
+        jwl_reactive = .false.
+#ifdef MFC_SIMULATION
+        prog_burn = .false.
+        jwl_ab_model = 2
+        jwl_q_ab = dflt_real
+        jwl_ab_tau = dflt_real
+        jwl_ab_A = dflt_real
+        jwl_ab_theta = dflt_real
+        jwl_ab_n = 0._wp
+        pb_D_cj = dflt_real
+        pb_width = dflt_real
+        pb_x_det = 0._wp
+        pb_y_det = 0._wp
+        pb_z_det = 0._wp
+        pb_t_det = 0._wp
+        jwl_G = dflt_real
+        jwl_b_exp = dflt_real
+#endif
+
     end subroutine s_assign_common_defaults
+
+    impure subroutine s_assign_jwl_defaults(fluid)
+
+        type(physical_parameters), intent(inout) :: fluid
+
+        fluid%jwl_Q = dflt_real
+        fluid%jwl_E0 = dflt_real
+        fluid%jwl_air_e0 = dflt_real
+        fluid%jwl_air_rho0 = dflt_real
+        fluid%jwl_air_p0 = dflt_real
+        fluid%jwl_ej_rho_ref = dflt_real
+        fluid%jwl_delta_e = 0._wp
+
+    end subroutine s_assign_jwl_defaults
 
 end module m_global_parameters_common

@@ -98,6 +98,40 @@ contains
 
     end subroutine s_initialize_particles_mpi
 
+    subroutine s_initialize_solid_particles_mpi(lag_num_ts)
+
+        integer :: i, j, k
+        integer :: real_size, int_size, nReal, lag_num_ts, max_dirs
+        integer :: ierr  !< Generic flag used to identify and report MPI errors
+
+#ifdef MFC_MPI
+        call MPI_Pack_size(1, mpi_p, MPI_COMM_WORLD, real_size, ierr)
+        call MPI_Pack_size(1, MPI_INTEGER, MPI_COMM_WORLD, int_size, ierr)
+        max_dirs = 2**num_dims - 1
+        nReal = 10 + 13*2 + 7*lag_num_ts
+        p_var_size = (nReal*real_size + 2*int_size)
+        p_buff_size = lag_params%nParticles_glb*p_var_size*max_dirs
+        @:ALLOCATE(p_send_buff(0:p_buff_size), p_recv_buff(0:p_buff_size))
+        @:ALLOCATE(p_send_ids(nidx(1)%beg:nidx(1)%end, nidx(2)%beg:nidx(2)%end, nidx(3)%beg:nidx(3)%end, &
+                   & 0:lag_params%nParticles_glb))
+        ! First, collect all neighbor information
+        n_neighbors = 0
+        do k = nidx(3)%beg, nidx(3)%end
+            do j = nidx(2)%beg, nidx(2)%end
+                do i = nidx(1)%beg, nidx(1)%end
+                    if (abs(i) + abs(j) + abs(k) /= 0) then
+                        n_neighbors = n_neighbors + 1
+                        neighbor_list(n_neighbors, 1) = i
+                        neighbor_list(n_neighbors, 2) = j
+                        neighbor_list(n_neighbors, 3) = k
+                    end if
+                end do
+            end do
+        end do
+#endif
+
+    end subroutine s_initialize_solid_particles_mpi
+
     !> Since only the processor with rank 0 reads and verifies the consistency of user inputs, these are initially not available to
     !! the other processors. Then, the purpose of this subroutine is to distribute the user inputs to the remaining processors in
     !! the communicator.
@@ -115,6 +149,15 @@ contains
         call MPI_BCAST(m_glb, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
         call MPI_BCAST(n_glb, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
         call MPI_BCAST(p_glb, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
+
+        ! LSO coefficient tables are two-dimensional arrays and stay in the manual
+        ! broadcast residue rather than the one-dimensional generator path.
+        call MPI_BCAST(lso_a_x(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso_a_y(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso_a_z(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso2_a_x(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso2_a_y(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso2_a_z(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
 
         ! manual: bc_x/y/z member broadcasts (struct members not in NAMELIST_VARS)
         #:for VAR in [ 'bc_x%beg', 'bc_x%end', 'bc_y%beg', 'bc_y%end', 'bc_z%beg', 'bc_z%end']
@@ -215,6 +258,7 @@ contains
             call MPI_BCAST(particle_cloud(i)%moving_ibm, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(particle_cloud(i)%seed, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(particle_cloud(i)%cloud_geometry, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
+            call MPI_BCAST(particle_cloud(i)%shell_axis, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(particle_cloud(i)%packing_method, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(particle_cloud(i)%periodic, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
         end do
@@ -577,6 +621,219 @@ contains
         end if
 
     end subroutine s_mpi_sendrecv_particles
+    impure subroutine s_mpi_sendrecv_solid_particles(p_owner_rank, particle_R0, Rmax_stats, Rmin_stats, particle_mass, &
+        & particle_seed, f_p, fqs_fluct, lag_id, rad, pos, posPrev, vel, scoord, drad, dpos, dvel, lag_num_ts, nParticles, dest)
+
+        integer, dimension(:) :: p_owner_rank
+        real(wp), dimension(:) :: particle_R0, Rmax_stats, Rmin_stats, particle_mass
+        integer, dimension(:) :: particle_seed
+        real(wp), dimension(:,:) :: f_p
+        real(wp), dimension(:,:) :: fqs_fluct
+        integer, dimension(:,:) :: lag_id
+        real(wp), dimension(:,:) :: rad, drad
+        real(wp), dimension(:,:,:) :: pos, posPrev, vel, scoord, dpos, dvel
+        integer :: position, particle_id, lag_num_ts, tag, partner, send_tag, recv_tag, nParticles, p_recv_size, dest
+        integer :: i, j, k, l, q, r
+        integer :: req_send, req_recv, ierr  !< Generic flag used to identify and report MPI errors
+        integer :: send_count, send_offset, recv_count, recv_offset
+
+#ifdef MFC_MPI
+        ! Phase 1: Exchange particle counts using non-blocking communication
+        send_count = 0
+        recv_count = 0
+
+        ! Post all receives first
+        do l = 1, n_neighbors
+            i = neighbor_list(l, 1)
+            j = neighbor_list(l, 2)
+            k = neighbor_list(l, 3)
+            partner = neighbor_ranks(i, j, k)
+            recv_tag = neighbor_tag(i, j, k)
+
+            recv_count = recv_count + 1
+            call MPI_Irecv(p_recv_counts(i, j, k), 1, MPI_INTEGER, partner, recv_tag, MPI_COMM_WORLD, recv_requests(recv_count), &
+                           & ierr)
+        end do
+
+        ! Post all sends
+        do l = 1, n_neighbors
+            i = neighbor_list(l, 1)
+            j = neighbor_list(l, 2)
+            k = neighbor_list(l, 3)
+            partner = neighbor_ranks(i, j, k)
+            send_tag = neighbor_tag(-i, -j, -k)
+
+            send_count = send_count + 1
+            call MPI_Isend(p_send_counts(i, j, k), 1, MPI_INTEGER, partner, send_tag, MPI_COMM_WORLD, send_requests(send_count), &
+                           & ierr)
+        end do
+
+        ! Wait for all count exchanges to complete
+        if (recv_count > 0) then
+            call MPI_Waitall(recv_count, recv_requests(1:recv_count), MPI_STATUSES_IGNORE, ierr)
+        end if
+        if (send_count > 0) then
+            call MPI_Waitall(send_count, send_requests(1:send_count), MPI_STATUSES_IGNORE, ierr)
+        end if
+
+        ! Phase 2: Exchange particle data using non-blocking communication
+        send_count = 0
+        recv_count = 0
+
+        ! Post all receives for particle data first
+        recv_offset = 0
+        do l = 1, n_neighbors
+            i = neighbor_list(l, 1)
+            j = neighbor_list(l, 2)
+            k = neighbor_list(l, 3)
+
+            if (p_recv_counts(i, j, k) > 0) then
+                partner = neighbor_ranks(i, j, k)
+                p_recv_size = p_recv_counts(i, j, k)*p_var_size
+                recv_tag = neighbor_tag(i, j, k)
+
+                recv_count = recv_count + 1
+                call MPI_Irecv(p_recv_buff(recv_offset), p_recv_size, MPI_PACKED, partner, recv_tag, MPI_COMM_WORLD, &
+                               & recv_requests(recv_count), ierr)
+                recv_offsets(l) = recv_offset
+                recv_offset = recv_offset + p_recv_size
+            end if
+        end do
+
+        ! Pack and send particle data
+        send_offset = 0
+        do l = 1, n_neighbors
+            i = neighbor_list(l, 1)
+            j = neighbor_list(l, 2)
+            k = neighbor_list(l, 3)
+
+            if (p_send_counts(i, j, k) > 0 .and. abs(i) + abs(j) + abs(k) /= 0 .and. abs(i) + abs(j) + abs(k) /= 0) then
+                partner = neighbor_ranks(i, j, k)
+                send_tag = neighbor_tag(-i, -j, -k)
+
+                ! Pack data for sending
+                position = 0
+                do q = 0, p_send_counts(i, j, k) - 1
+                    particle_id = p_send_ids(i, j, k, q)
+
+                    call MPI_Pack(lag_id(particle_id, 1), 1, MPI_INTEGER, p_send_buff(send_offset), p_buff_size, position, &
+                                  & MPI_COMM_WORLD, ierr)
+                    call MPI_Pack(particle_R0(particle_id), 1, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                  & MPI_COMM_WORLD, ierr)
+                    call MPI_Pack(Rmax_stats(particle_id), 1, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                  & MPI_COMM_WORLD, ierr)
+                    call MPI_Pack(Rmin_stats(particle_id), 1, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                  & MPI_COMM_WORLD, ierr)
+                    call MPI_Pack(particle_mass(particle_id), 1, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                  & MPI_COMM_WORLD, ierr)
+                    call MPI_Pack(particle_seed(particle_id), 1, MPI_INTEGER, p_send_buff(send_offset), p_buff_size, position, &
+                                  & MPI_COMM_WORLD, ierr)
+                    call MPI_Pack(f_p(particle_id,:), 3, mpi_p, p_send_buff(send_offset), p_buff_size, position, MPI_COMM_WORLD, &
+                                  & ierr)
+                    call MPI_Pack(fqs_fluct(particle_id,:), 3, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                  & MPI_COMM_WORLD, ierr)
+                    do r = 1, 2
+                        call MPI_Pack(rad(particle_id, r), 1, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                      & MPI_COMM_WORLD, ierr)
+                        call MPI_Pack(pos(particle_id,:,r), 3, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                      & MPI_COMM_WORLD, ierr)
+                        call MPI_Pack(posPrev(particle_id,:,r), 3, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                      & MPI_COMM_WORLD, ierr)
+                        call MPI_Pack(vel(particle_id,:,r), 3, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                      & MPI_COMM_WORLD, ierr)
+                        call MPI_Pack(scoord(particle_id,:,r), 3, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                      & MPI_COMM_WORLD, ierr)
+                    end do
+                    do r = 1, lag_num_ts
+                        call MPI_Pack(drad(particle_id, r), 1, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                      & MPI_COMM_WORLD, ierr)
+                        call MPI_Pack(dpos(particle_id,:,r), 3, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                      & MPI_COMM_WORLD, ierr)
+                        call MPI_Pack(dvel(particle_id,:,r), 3, mpi_p, p_send_buff(send_offset), p_buff_size, position, &
+                                      & MPI_COMM_WORLD, ierr)
+                    end do
+                end do
+
+                send_count = send_count + 1
+                call MPI_Isend(p_send_buff(send_offset), position, MPI_PACKED, partner, send_tag, MPI_COMM_WORLD, &
+                               & send_requests(send_count), ierr)
+                send_offset = send_offset + position
+            end if
+        end do
+
+        ! Wait for all recvs for contiguous data to complete
+        call MPI_Waitall(recv_count, recv_requests(1:recv_count), MPI_STATUSES_IGNORE, ierr)
+
+        ! Process received data as it arrives
+        do l = 1, n_neighbors
+            i = neighbor_list(l, 1)
+            j = neighbor_list(l, 2)
+            k = neighbor_list(l, 3)
+
+            if (p_recv_counts(i, j, k) > 0 .and. abs(i) + abs(j) + abs(k) /= 0) then
+                p_recv_size = p_recv_counts(i, j, k)*p_var_size
+                recv_offset = recv_offsets(l)
+
+                position = 0
+                ! Unpack received data
+                do q = 0, p_recv_counts(i, j, k) - 1
+                    nParticles = nParticles + 1
+                    particle_id = nParticles
+
+                    p_owner_rank(particle_id) = neighbor_ranks(i, j, k)
+                    call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, lag_id(particle_id, 1), 1, MPI_INTEGER, &
+                                    & MPI_COMM_WORLD, ierr)
+                    call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, particle_R0(particle_id), 1, mpi_p, &
+                                    & MPI_COMM_WORLD, ierr)
+                    call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, Rmax_stats(particle_id), 1, mpi_p, &
+                                    & MPI_COMM_WORLD, ierr)
+                    call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, Rmin_stats(particle_id), 1, mpi_p, &
+                                    & MPI_COMM_WORLD, ierr)
+                    call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, particle_mass(particle_id), 1, mpi_p, &
+                                    & MPI_COMM_WORLD, ierr)
+                    call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, particle_seed(particle_id), 1, MPI_INTEGER, &
+                                    & MPI_COMM_WORLD, ierr)
+                    call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, f_p(particle_id,:), 3, mpi_p, &
+                                    & MPI_COMM_WORLD, ierr)
+                    call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, fqs_fluct(particle_id,:), 3, mpi_p, &
+                                    & MPI_COMM_WORLD, ierr)
+                    do r = 1, 2
+                        call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, rad(particle_id, r), 1, mpi_p, &
+                                        & MPI_COMM_WORLD, ierr)
+                        call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, pos(particle_id,:,r), 3, mpi_p, &
+                                        & MPI_COMM_WORLD, ierr)
+                        call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, posPrev(particle_id,:,r), 3, mpi_p, &
+                                        & MPI_COMM_WORLD, ierr)
+                        call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, vel(particle_id,:,r), 3, mpi_p, &
+                                        & MPI_COMM_WORLD, ierr)
+                        call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, scoord(particle_id,:,r), 3, mpi_p, &
+                                        & MPI_COMM_WORLD, ierr)
+                    end do
+                    do r = 1, lag_num_ts
+                        call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, drad(particle_id, r), 1, mpi_p, &
+                                        & MPI_COMM_WORLD, ierr)
+                        call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, dpos(particle_id,:,r), 3, mpi_p, &
+                                        & MPI_COMM_WORLD, ierr)
+                        call MPI_Unpack(p_recv_buff(recv_offset), p_recv_size, position, dvel(particle_id,:,r), 3, mpi_p, &
+                                        & MPI_COMM_WORLD, ierr)
+                    end do
+                    lag_id(particle_id, 2) = particle_id
+                end do
+                recv_offset = recv_offset + p_recv_size
+            end if
+        end do
+
+        ! Wait for all sends to complete
+        if (send_count > 0) then
+            call MPI_Waitall(send_count, send_requests(1:send_count), MPI_STATUSES_IGNORE, ierr)
+        end if
+#endif
+
+        if (any(periodic_bc)) then
+            call s_wrap_particle_positions(pos, posPrev, nParticles, dest)
+        end if
+
+    end subroutine s_mpi_sendrecv_solid_particles
 
     !> Return a unique tag for each neighbor based on its position relative to the current process.
     integer function neighbor_tag(i, j, k) result(tag)

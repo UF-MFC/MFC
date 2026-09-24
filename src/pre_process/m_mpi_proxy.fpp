@@ -92,7 +92,7 @@ contains
                 & 'length_x', 'length_y', 'length_z', 'radius', 'epsilon',     &
                 & 'beta', 'smooth_coeff', 'rho', 'p0', 'm0', 'r0', 'v0',       &
                 & 'pres', 'gamma', 'pi_inf', 'cv', 'qv', 'qvp',        &
-                & 'cf_val', 'Bx', 'By', 'Bz']
+                & 'cf_val', 'rxn_val', 'Bx', 'By', 'Bz']
                 call MPI_BCAST(patch_icpp(i)%${VAR}$, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)
             #:endfor
 
@@ -145,6 +145,7 @@ contains
             call MPI_BCAST(particle_cloud(i)%moving_ibm, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(particle_cloud(i)%seed, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(particle_cloud(i)%cloud_geometry, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
+            call MPI_BCAST(particle_cloud(i)%shell_axis, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(particle_cloud(i)%packing_method, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(particle_cloud(i)%periodic, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
         end do

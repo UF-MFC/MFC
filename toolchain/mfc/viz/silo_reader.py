@@ -10,13 +10,11 @@ This reader uses h5py to navigate that structure.
 
 Performance note
 ----------------
-The HDF5 file structure (which internal paths correspond to which
-variables) is **identical for every timestep of the same case**.  On
-the first read for each processor rank directory, ``_get_structure``
-parses the metadata and caches a ``_SiloStructure``.  All subsequent
-reads for that rank skip attribute iteration entirely and go directly
-to the HDF5 dataset paths, reducing per-step overhead from ~0.5–3 s to
-near-raw-I/O speed (~0.15 s).
+The initial snapshot can omit LSO fields present in later snapshots.
+For each processor rank and set of file objects, ``_get_structure``
+parses the metadata once and caches a ``_SiloStructure``. Subsequent
+reads with that layout skip attribute iteration and use the cached
+HDF5 dataset paths.
 """
 
 import atexit
@@ -44,8 +42,7 @@ _DB_QUADVAR = 501
 class _SiloStructure:
     """Cached HDF5 layout for one processor's silo files.
 
-    All timestep files in the same rank directory have the same internal
-    path assignments, so we only need to parse this once.
+    Reuse only for snapshots with the same set of file objects.
     """
 
     ndims: int
@@ -53,7 +50,7 @@ class _SiloStructure:
     var_paths: Dict[str, bytes] = field(default_factory=dict)  # varname → data path
 
 
-_struct_cache: Dict[str, _SiloStructure] = {}  # key = rank directory path
+_struct_cache: Dict[Tuple[str, Tuple[str, ...]], _SiloStructure] = {}
 _struct_lock = threading.Lock()
 
 
@@ -101,22 +98,22 @@ def _parse_structure(f) -> _SiloStructure:
     return _SiloStructure(ndims=ndims, coord_paths=coord_paths, var_paths=var_paths)
 
 
-def _get_structure(rank_dir: str, example_path: str) -> _SiloStructure:
-    """Return the cached structure for *rank_dir*, parsing *example_path* on a miss."""
+def _get_structure(rank_dir: str, f) -> _SiloStructure:
+    """Cache each rank's layouts separately when the saved field set changes."""
+    key = (rank_dir, tuple(sorted(f.keys())))
     with _struct_lock:
-        if rank_dir in _struct_cache:
-            return _struct_cache[rank_dir]
+        if key in _struct_cache:
+            return _struct_cache[key]
 
     # Parse outside lock — two threads may both parse on a cold miss, which is
     # safe (identical result) and far cheaper than holding the lock during I/O.
-    with h5py.File(example_path, "r") as f:
-        struct = _parse_structure(f)
+    struct = _parse_structure(f)
 
     with _struct_lock:
         # Re-check in case another thread beat us here.
-        if rank_dir not in _struct_cache:
-            _struct_cache[rank_dir] = struct
-        return _struct_cache[rank_dir]
+        if key not in _struct_cache:
+            _struct_cache[key] = struct
+        return _struct_cache[key]
 
 
 def clear_structure_cache() -> None:
@@ -142,9 +139,8 @@ def read_silo_file(
     """
     Read a single Silo-HDF5 file produced by MFC post_process.
 
-    On the first call for a given *rank_dir* the file structure is parsed
-    and cached.  Subsequent calls for the same rank skip all metadata work
-    and read data directly.
+    On the first call for a given *rank_dir* and field set the file structure
+    is parsed and cached. Subsequent calls with the same layout reuse it.
 
     Args:
         path:       Path to the ``.silo`` file.
@@ -155,9 +151,8 @@ def read_silo_file(
     if rank_dir is None:
         rank_dir = os.path.dirname(path)
 
-    struct = _get_structure(rank_dir, path)
-
     with h5py.File(path, "r") as f:
+        struct = _get_structure(rank_dir, f)
         # Coordinates — read directly by cached path
         coords = [_resolve_path(f, cp) for cp in struct.coord_paths]
 

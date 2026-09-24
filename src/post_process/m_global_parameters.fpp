@@ -20,6 +20,8 @@ module m_global_parameters
 
     implicit none
 
+    integer, parameter :: lso_max_passes = 60
+
     !> @name Logistics
     !> @{
     integer :: num_procs  !< Number of processors
@@ -47,10 +49,32 @@ module m_global_parameters
     integer :: m_glb, n_glb, p_glb
     !> @}
 
+    ! LSO statistical-product layout and coarsened-grid dimensions are derived
+    ! from the case and are shared with the post-process filter module.
+    integer :: n_lso_stat
+    integer :: m_lso_ds, n_lso_ds, p_lso_ds
+    integer :: m_glb_lso_ds, n_glb_lso_ds, p_glb_lso_ds
+    integer :: lso_stat_phi_p_beg, lso_stat_phi_p_end
+    integer :: lso_stat_rho_beg, lso_stat_rho_end
+    integer :: lso_stat_rhoke_beg, lso_stat_rhoke_end
+    integer :: lso_stat_up_beg, lso_stat_up_end
+    integer :: lso_stat_rhou_beg, lso_stat_rhou_end
+    integer :: lso_stat_rhouu_beg, lso_stat_rhouu_end
+    integer :: lso_stat_rhouke_beg, lso_stat_rhouke_end
+    integer :: lso_stat_rhouT_beg, lso_stat_rhouT_end
+    integer :: lso_stat_tau_beg, lso_stat_tau_end
+    integer :: lso_stat_q_beg, lso_stat_q_end
+    integer :: lso_stat_rhotau_u_beg, lso_stat_rhotau_u_end
+
     ! num_dims, num_vels: in m_global_parameters_common
     !> @name Cell-boundary locations in the x-, y- and z-coordinate directions
     !> @{
     real(wp), allocatable, dimension(:) :: x_cb, x_root_cb, y_cb, z_cb
+    ! Single-precision copies, handed to Silo when precision == precision_single.
+    ! Silo stores the mesh coordinates with their own datatype, independent of the
+    ! flow variables, so the mesh needs its own single-precision arrays to follow
+    ! the requested precision.
+    real(sp), allocatable, dimension(:) :: x_cb_s, y_cb_s, z_cb_s
     !> @}
 
     !> @name Cell-center locations in the x-, y- and z-coordinate directions
@@ -219,6 +243,7 @@ contains
             fluid_pp(i)%jwl_omega = dflt_real
             fluid_pp(i)%jwl_rho0 = dflt_real
             fluid_pp(i)%jwl_t0 = 0._wp
+            call s_assign_jwl_defaults(fluid_pp(i))
             fluid_pp(i)%vinet_k0 = dflt_real
             fluid_pp(i)%vinet_k0p = dflt_real
             fluid_pp(i)%vinet_rho0 = dflt_real
@@ -336,6 +361,15 @@ contains
         schlieren_alpha = dflt_real
 
         fd_order = dflt_int
+
+        lso_down_sample_factor = 1
+        n_lso_stat = 0
+        lso_pp2_n_passes_x = 0
+        lso_pp2_n_passes_y = 0
+        lso_pp2_n_passes_z = 0
+        lso_pp2_a_x = 0._wp
+        lso_pp2_a_y = 0._wp
+        lso_pp2_a_z = 0._wp
 
         ! Bubble modeling (post-specific)
         nb = dflt_int
@@ -500,6 +534,7 @@ contains
             fd_number = max(1, fd_order/2)
             buff_size = buff_size + fd_number
         end if
+        if (lso_stat_wrt .or. lso_pp_filter .or. lso_closure_wrt) buff_size = max(buff_size, 4)
 
         ! Configuring Coordinate Direction Indexes
         idwint(1)%beg = 0; idwint(2)%beg = 0; idwint(3)%beg = 0
@@ -521,16 +556,28 @@ contains
         allocate (x_cc(-buff_size:m + buff_size))
         allocate (dx(-buff_size:m + buff_size))
 
+        if (precision == precision_single) then
+            allocate (x_cb_s(-1 - offset_x%beg:m + offset_x%end))
+        end if
+
         ! Allocating grid variables in the y- and z-coordinate directions
         if (n > 0) then
             allocate (y_cb(-1 - offset_y%beg:n + offset_y%end))
             allocate (y_cc(-buff_size:n + buff_size))
             allocate (dy(-buff_size:n + buff_size))
 
+            if (precision == precision_single) then
+                allocate (y_cb_s(-1 - offset_y%beg:n + offset_y%end))
+            end if
+
             if (p > 0) then
                 allocate (z_cb(-1 - offset_z%beg:p + offset_z%end))
                 allocate (z_cc(-buff_size:p + buff_size))
                 allocate (dz(-buff_size:p + buff_size))
+
+                if (precision == precision_single) then
+                    allocate (z_cb_s(-1 - offset_z%beg:p + offset_z%end))
+                end if
             end if
 
             ! Allocating the grid variables, only used for the 1D simulations, and containing the defragmented computational domain
@@ -575,12 +622,15 @@ contains
 
         ! Deallocating the grid variables for the x-coordinate direction
         deallocate (x_cc, x_cb, dx)
+        if (allocated(x_cb_s)) deallocate (x_cb_s)
 
         ! Deallocating grid variables for the y- and z-coordinate directions
         if (n > 0) then
             deallocate (y_cc, y_cb, dy)
+            if (allocated(y_cb_s)) deallocate (y_cb_s)
             if (p > 0) then
                 deallocate (z_cc, z_cb, dz)
+                if (allocated(z_cb_s)) deallocate (z_cb_s)
             end if
         else
             ! Deallocating the grid variables, only used for the 1D simulations, and containing the defragmented computational

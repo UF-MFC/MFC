@@ -11,6 +11,7 @@ module m_checker
     use m_mpi_proxy
     use m_helper_basic
     use m_helper
+    use m_constants, only: eos_stiffened_gas, eos_ideal_gas
 
     implicit none
 

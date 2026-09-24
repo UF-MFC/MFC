@@ -320,6 +320,8 @@ if "post_process" in ARGS["mfc"]["targets"]:
         mods.update({json.dumps(POST_PROCESS_3D_PARAMS)})
 else:
     mods = {json.dumps(POST_PROCESS_OFF_PARAMS)}
+    if any(case.get(key, "F") == "T" for key in ("lso_stat_wrt", "lso_pp_filter", "lso_closure_wrt")):
+        mods["parallel_io"] = "T"
 
 print(json.dumps({{**case, **mods}}))
 """,

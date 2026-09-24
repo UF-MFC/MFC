@@ -75,6 +75,77 @@ contains
     end subroutine s_read_grid_data_direction
 
 #ifdef MFC_MPI
+    !> Sparse fine-grid samples at coarse-cell centres; shared by initial fields and categorical IB markers.
+    impure subroutine s_lso_fine_view(element_type, corner, disp, view)
+
+        integer, intent(in)                          :: element_type, corner(3)
+        integer(kind=MPI_OFFSET_KIND), intent(inout) :: disp
+        integer, intent(out)                         :: view
+        integer                                      :: strides(3), starts(3), sizes(3), bytes, x_view, y_view, ierr
+        integer(kind=MPI_ADDRESS_KIND)               :: pitch
+
+        strides = 1
+        strides(1:num_dims) = lso_down_sample_factor
+        sizes = [m_glb + 1, n_glb + 1, p_glb + 1]*strides
+        starts = (strides - 1)/2 + corner
+        starts(1:num_dims) = starts(1:num_dims) + start_idx*strides(1:num_dims)
+        call MPI_TYPE_SIZE(element_type, bytes, ierr)
+        disp = disp + int(bytes, MPI_OFFSET_KIND)*(int(starts(1), MPI_OFFSET_KIND) + int(sizes(1), &
+                          & MPI_OFFSET_KIND)*(int(starts(2), MPI_OFFSET_KIND) + int(sizes(2), MPI_OFFSET_KIND)*int(starts(3), &
+                          & MPI_OFFSET_KIND)))
+        call MPI_TYPE_VECTOR(m + 1, 1, strides(1), element_type, x_view, ierr)
+        pitch = int(bytes, MPI_ADDRESS_KIND)*int(sizes(1), MPI_ADDRESS_KIND)*int(strides(2), MPI_ADDRESS_KIND)
+        call MPI_TYPE_CREATE_HVECTOR(n + 1, 1, pitch, x_view, y_view, ierr)
+        pitch = int(bytes, MPI_ADDRESS_KIND)*int(sizes(1), MPI_ADDRESS_KIND)*int(sizes(2), MPI_ADDRESS_KIND)*int(strides(3), &
+                    & MPI_ADDRESS_KIND)
+        call MPI_TYPE_CREATE_HVECTOR(p + 1, 1, pitch, y_view, view, ierr)
+        call MPI_TYPE_COMMIT(view, ierr)
+        call MPI_TYPE_FREE(x_view, ierr)
+        call MPI_TYPE_FREE(y_view, ierr)
+
+    end subroutine s_lso_fine_view
+
+    !> The initial snapshot is unfiltered and full resolution; interpolate without allocating a fine-grid field.
+    impure subroutine s_read_lso_initial_fields(ifile)
+
+        integer, intent(in)           :: ifile
+        integer                       :: i, j, k, l, upper(3), element_type, view, ierr, count
+        integer                       :: status(MPI_STATUS_SIZE)
+        integer(kind=MPI_OFFSET_KIND) :: disp, field_bytes
+        real(stp), allocatable        :: samples(:,:,:)
+        real(wp), allocatable         :: interpolated(:,:,:)
+
+        upper = 0
+        if (mod(lso_down_sample_factor, 2) == 0) upper(1:num_dims) = 1
+        field_bytes = int(m_glb + 1, MPI_OFFSET_KIND)*int(n_glb + 1, MPI_OFFSET_KIND)*int(p_glb + 1, &
+                          & MPI_OFFSET_KIND)*int(lso_down_sample_factor, MPI_OFFSET_KIND)**num_dims*int(storage_size(0._stp)/8, &
+                          & MPI_OFFSET_KIND)
+        allocate (samples(0:m,0:n,0:p), interpolated(0:m,0:n,0:p))
+        call MPI_TYPE_CONTIGUOUS(mpi_io_type, mpi_io_p, element_type, ierr)
+        call MPI_TYPE_COMMIT(element_type, ierr)
+        do i = 1, sys_size
+            interpolated = 0._wp
+            do l = 0, upper(3)
+                do k = 0, upper(2)
+                    do j = 0, upper(1)
+                        disp = field_bytes*int(i - 1, MPI_OFFSET_KIND)
+                        call s_lso_fine_view(element_type, [j, k, l], disp, view)
+                        call MPI_FILE_SET_VIEW(ifile, disp, mpi_io_p, view, 'native', mpi_info_int, ierr)
+                        call MPI_FILE_READ_ALL(ifile, samples, size(samples)*mpi_io_type, mpi_io_p, status, ierr)
+                        call MPI_GET_COUNT(status, mpi_io_p, count, ierr)
+                        if (count /= size(samples)*mpi_io_type) call s_mpi_abort('Incomplete LSO initial field.')
+                        interpolated = interpolated + real(samples, wp)/real(product(upper + 1), wp)
+                        call MPI_TYPE_FREE(view, ierr)
+                    end do
+                end do
+            end do
+            q_cons_vf(i)%sf(0:m,0:n,0:p) = real(interpolated, stp)
+        end do
+        call MPI_TYPE_FREE(element_type, ierr)
+        deallocate (samples, interpolated)
+
+    end subroutine s_read_lso_initial_fields
+
     !> Helper subroutine to setup MPI data I/O parameters
     impure subroutine s_setup_mpi_io_params(data_size, m_MOK, n_MOK, p_MOK, WP_MOK, MOK, str_MOK, NVARS_MOK)
 
@@ -116,6 +187,8 @@ contains
         integer(KIND=MPI_OFFSET_KIND)       :: disp
         integer(KIND=MPI_OFFSET_KIND)       :: m_MOK, n_MOK, p_MOK, MOK, WP_MOK, var_MOK
         integer                             :: save_index
+        integer                             :: view
+        integer, allocatable                :: marker_samples(:,:,:)
 #endif
 
         if (.not. ib) return
@@ -161,8 +234,20 @@ contains
                     disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1 + int(save_index, MPI_OFFSET_KIND))
                 end if
 
-                call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, MPI_IO_IB_DATA%view, 'native', mpi_info_int, ierr)
-                call MPI_FILE_READ(ifile, MPI_IO_IB_DATA%var%sf, data_size, MPI_INTEGER, status, ierr)
+                if (lso_filter_wrt .and. lso_down_sample_factor > 1) then
+                    disp = disp*int(lso_down_sample_factor, MPI_OFFSET_KIND)**num_dims
+                    ! IDs are categorical: nearest fine centre, lower index on an even-factor tie.
+                    call s_lso_fine_view(MPI_INTEGER, [0, 0, 0], disp, view)
+                    allocate (marker_samples(0:m,0:n,0:p))
+                    call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, view, 'native', mpi_info_int, ierr)
+                    call MPI_FILE_READ_ALL(ifile, marker_samples, data_size, MPI_INTEGER, status, ierr)
+                    ib_markers%sf(0:m,0:n,0:p) = marker_samples
+                    deallocate (marker_samples)
+                    call MPI_TYPE_FREE(view, ierr)
+                else
+                    call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, MPI_IO_IB_DATA%view, 'native', mpi_info_int, ierr)
+                    call MPI_FILE_READ(ifile, MPI_IO_IB_DATA%var%sf, data_size, MPI_INTEGER, status, ierr)
+                end if
 
                 call MPI_FILE_CLOSE(ifile, ierr)
 #endif
@@ -244,6 +329,9 @@ contains
         do i = 1, sys_size
             write (file_num, '(I0)') i
             file_loc = trim(t_step_dir) // '/q_cons_vf' // trim(file_num) // '.dat'
+            if (lso_filter_wrt .and. t_step > t_step_start) then
+                file_loc = trim(t_step_dir) // '/lso_q_cons_vf' // trim(file_num) // '.dat'
+            end if
             inquire (FILE=trim(file_loc), EXIST=file_check)
 
             if (file_check) then
@@ -291,6 +379,7 @@ contains
         else
             stride = 1
         end if
+        if (lso_filter_wrt .and. lso_down_sample_factor > 1) stride = lso_down_sample_factor
 
         file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // 'x_cb.dat'
         inquire (FILE=trim(file_loc), EXIST=file_exist, SIZE=file_bytes)
@@ -401,15 +490,18 @@ contains
         integer                                      :: ifile, ierr, data_size
         integer, dimension(MPI_STATUS_SIZE)          :: status
         integer(KIND=MPI_OFFSET_KIND)                :: disp, var_MOK
-        character(LEN=path_len + 2*name_len)         :: file_loc
+        character(LEN=path_len + 2*name_len)         :: file_loc, file_loc_base
         logical                                      :: file_exist
         character(len=10)                            :: t_step_string
         integer                                      :: i
 
         if (file_per_process) then
             call s_int_to_str(t_step, t_step_string)
-            write (file_loc, '(I0,A1,I7.7,A)') t_step, '_', proc_rank, '.dat'
-            file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc)
+            write (file_loc_base, '(I0,A1,I7.7,A)') t_step, '_', proc_rank, '.dat'
+            if (lso_filter_wrt .and. t_step > t_step_start) then
+                file_loc_base = 'lso_' // trim(file_loc_base)
+            end if
+            file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc_base)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
 
             if (file_exist) then
@@ -465,8 +557,11 @@ contains
                 call s_mpi_abort('File ' // trim(file_loc) // ' is missing. Exiting.')
             end if
         else
-            write (file_loc, '(I0,A)') t_step, '.dat'
-            file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
+            write (file_loc_base, '(I0,A)') t_step, '.dat'
+            if (lso_filter_wrt .and. t_step > t_step_start) then
+                file_loc_base = 'lso_' // trim(file_loc_base)
+            end if
+            file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc_base)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
 
             if (file_exist) then
@@ -474,14 +569,18 @@ contains
 
                 call s_setup_mpi_io_params(data_size, m_MOK, n_MOK, p_MOK, WP_MOK, MOK, str_MOK, NVARS_MOK)
 
-                do i = 1, sys_size
-                    var_MOK = int(i, MPI_OFFSET_KIND)
+                if (lso_filter_wrt .and. lso_down_sample_factor > 1 .and. t_step == t_step_start) then
+                    call s_read_lso_initial_fields(ifile)
+                else
+                    do i = 1, sys_size
+                        var_MOK = int(i, MPI_OFFSET_KIND)
 
-                    disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1)
+                        disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1)
 
-                    call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, MPI_IO_DATA%view(i), 'native', mpi_info_int, ierr)
-                    call MPI_FILE_READ_ALL(ifile, MPI_IO_DATA%var(i)%sf, data_size*mpi_io_type, mpi_io_p, status, ierr)
-                end do
+                        call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, MPI_IO_DATA%view(i), 'native', mpi_info_int, ierr)
+                        call MPI_FILE_READ_ALL(ifile, MPI_IO_DATA%var(i)%sf, data_size*mpi_io_type, mpi_io_p, status, ierr)
+                    end do
+                end if
 
                 call s_mpi_barrier()
                 call MPI_FILE_CLOSE(ifile, ierr)

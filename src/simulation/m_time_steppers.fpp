@@ -18,6 +18,7 @@ module m_time_steppers
     use m_data_output
     use m_bubbles_EE
     use m_bubbles_EL
+    use m_particles_EL
     use m_ibm
     use m_collisions, only: collisions_active
     use m_mpi_proxy
@@ -494,6 +495,7 @@ contains
             end if
 
             if (bubbles_lagrange .and. .not. adap_dt) call s_update_lagrange_tdv_rk(q_prim_vf, bc_type, stage=s)
+            if (particles_lagrange) call s_update_lagrange_particles_tdv_rk(q_prim_vf, bc_type, stage=s)
             $:GPU_PARALLEL_LOOP(collapse=4)
             do i = 1, sys_size
                 do l = 0, p
@@ -609,6 +611,7 @@ contains
             if (moving_immersed_boundary_flag) then
                 call s_wrap_periodic_ibs()  ! wraps the positions of IBs to the local proc
                 call s_handoff_ib_ownership()  ! recomputes which ranks own which IBs and communicate to neighbors
+                call s_debug_log_ib_divergence(t_step)  ! TEMPORARY: logs any cross-rank IB state mismatch
             else if (ib_state_wrt) then
                 call s_compute_ib_forces(q_prim_vf, fluid_pp)
             end if
@@ -679,6 +682,7 @@ contains
         real(wp), dimension(5) :: dt_candidates_loc  !< Rank-local dt candidates (ICFL, VCFL, CCFL, TCFL, collision cap)
         real(wp), dimension(5) :: dt_candidates_glb  !< Global dt candidates (ICFL, VCFL, CCFL, TCFL, collision cap)
         real(wp)               :: dt_prev
+        logical                :: is_fluid_cell      !< Cell lies outside every immersed boundary
         integer                :: j, k, l            !< Generic loop iterators
         integer                :: fl                 !< Fluid loop iterator
 
@@ -693,39 +697,46 @@ contains
         tcfl_dt_local = huge(1.0_wp)
         coll_dt_local = huge(1.0_wp)
         $:GPU_PARALLEL_LOOP(collapse=3, private='[vel, alpha, alpha_rho, Re, rho, vel_sum, pres, gamma, pi_inf, c, qv, fl, &
-                            & max_dt]', reduction='[[icfl_dt_local, vcfl_dt_local, ccfl_dt_local, tcfl_dt_local]]', reductionOp='[min]')
+                            & max_dt, is_fluid_cell]', reduction='[[icfl_dt_local, vcfl_dt_local, ccfl_dt_local, &
+                            & tcfl_dt_local]]', reductionOp='[min]')
         do l = 0, p
             do k = 0, n
                 do j = 0, m
-                    if (igr) then
-                        call s_compute_cell_state(q_cons_ts(1)%vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, &
-                                                  & qv, j, k, l)
-                    else
-                        call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, &
-                                                  & k, l)
+                    ! Cells inside an immersed boundary hold ghost-derived, non-physical state and must not set the global dt.
+                    is_fluid_cell = .true.
+                    if (ib) is_fluid_cell = (ib_markers%sf(j, k, l) == 0)
+
+                    if (is_fluid_cell) then
+                        if (igr) then
+                            call s_compute_cell_state(q_cons_ts(1)%vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, &
+                                                      & vel_sum, qv, j, k, l)
+                        else
+                            call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, &
+                                                      & qv, j, k, l)
+                        end if
+
+                        ! Compute mixture sound speed
+                        call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
+
+                        if (any_non_newtonian) then
+                            Re(1) = 0._wp
+                            do fl = 1, num_fluids
+                                if (is_non_newtonian(fl)) then
+                                    Re(1) = Re(1) + alpha(fl)*hb_mu_max(fl)
+                                else
+                                    Re(1) = Re(1) + alpha(fl)*fluid_inv_re(fl)
+                                end if
+                            end do
+                            Re(1) = 1._wp/max(Re(1), sgm_eps)
+                        end if
+
+                        call s_compute_dt_from_cfl(vel, c, max_dt, rho, Re, alpha, alpha_rho, j, k, l)
+
+                        icfl_dt_local = min(icfl_dt_local, max_dt(1))
+                        vcfl_dt_local = min(vcfl_dt_local, max_dt(2))
+                        ccfl_dt_local = min(ccfl_dt_local, max_dt(3))
+                        tcfl_dt_local = min(tcfl_dt_local, max_dt(4))
                     end if
-
-                    ! Compute mixture sound speed
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
-
-                    if (any_non_newtonian) then
-                        Re(1) = 0._wp
-                        do fl = 1, num_fluids
-                            if (is_non_newtonian(fl)) then
-                                Re(1) = Re(1) + alpha(fl)*hb_mu_max(fl)
-                            else
-                                Re(1) = Re(1) + alpha(fl)*fluid_inv_re(fl)
-                            end if
-                        end do
-                        Re(1) = 1._wp/max(Re(1), sgm_eps)
-                    end if
-
-                    call s_compute_dt_from_cfl(vel, c, max_dt, rho, Re, alpha, alpha_rho, j, k, l)
-
-                    icfl_dt_local = min(icfl_dt_local, max_dt(1))
-                    vcfl_dt_local = min(vcfl_dt_local, max_dt(2))
-                    ccfl_dt_local = min(ccfl_dt_local, max_dt(3))
-                    tcfl_dt_local = min(tcfl_dt_local, max_dt(4))
                 end do
             end do
         end do
@@ -762,6 +773,107 @@ contains
         $:GPU_UPDATE(device='[dt]')
 
     end subroutine s_compute_dt
+
+    !> On a dt-floor abort, print the fluid cells whose own dt candidate falls below dt_floor (NaN included), with their state and
+    !! the immersed boundaries within 3 cells (global ids as in the ib_state output, zero-padded; ib_dist -1 means none)
+    impure subroutine s_report_dt_floor_cells(dt_floor)
+
+        use m_ib_patches, only: s_decode_patch_periodicity
+
+        real(wp), intent(in) :: dt_floor
+        real(wp)             :: rho, vel_sum, pres, gamma, pi_inf, qv, c, z
+
+        #:if not MFC_CASE_OPTIMIZATION and USING_AMD
+            real(wp), dimension(3) :: vel
+            real(wp), dimension(3) :: alpha
+        #:else
+            real(wp), dimension(num_vels)   :: vel
+            real(wp), dimension(num_fluids) :: alpha
+        #:endif
+        real(wp), dimension(2)          :: Re
+        real(wp), dimension(4)          :: max_dt
+        real(wp), dimension(num_fluids) :: alpha_rho
+        integer, dimension(3)           :: ids
+        integer                         :: num_bad, num_ids, ib_dist, gid, r, rz, i, j, k, l, jj, kk, ll, fl
+
+        do i = 1, sys_size
+            if (igr) then
+                $:GPU_UPDATE(host='[q_cons_ts(1)%vf(i)%sf]')
+            else
+                $:GPU_UPDATE(host='[q_prim_vf(i)%sf]')
+            end if
+        end do
+        if (ib) then
+            $:GPU_UPDATE(host='[ib_markers%sf]')
+        end if
+
+        num_bad = 0
+        rz = merge(3, 0, p > 0)
+        do l = 0, p
+            do k = 0, n
+                do j = 0, m
+                    if (ib) then
+                        if (ib_markers%sf(j, k, l) /= 0) cycle
+                    end if
+
+                    if (igr) then
+                        call s_compute_cell_state(q_cons_ts(1)%vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, &
+                                                  & qv, j, k, l)
+                    else
+                        call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, &
+                                                  & k, l)
+                    end if
+                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
+                    if (any_non_newtonian) then
+                        Re(1) = 0._wp
+                        do fl = 1, num_fluids
+                            if (is_non_newtonian(fl)) then
+                                Re(1) = Re(1) + alpha(fl)*hb_mu_max(fl)
+                            else
+                                Re(1) = Re(1) + alpha(fl)*fluid_inv_re(fl)
+                            end if
+                        end do
+                        Re(1) = 1._wp/max(Re(1), sgm_eps)
+                    end if
+                    call s_compute_dt_from_cfl(vel, c, max_dt, rho, Re, alpha, alpha_rho, j, k, l)
+
+                    if (all(max_dt >= dt_floor)) cycle
+                    num_bad = num_bad + 1
+                    if (num_bad > 4) cycle
+
+                    ib_dist = -1
+                    num_ids = 0
+                    ids = 0
+                    if (ib) then
+                        do ll = l - rz, l + rz
+                            do kk = k - 3, k + 3
+                                do jj = j - 3, j + 3
+                                    if (ib_markers%sf(jj, kk, ll) == 0) cycle
+                                    r = max(abs(jj - j), abs(kk - k), abs(ll - l))
+                                    if (ib_dist < 0 .or. r < ib_dist) ib_dist = r
+                                    call s_decode_patch_periodicity(ib_markers%sf(jj, kk, ll), gid)
+                                    if (num_ids < 3 .and. .not. any(ids(1:num_ids) == gid)) then
+                                        num_ids = num_ids + 1
+                                        ids(num_ids) = gid
+                                    end if
+                                end do
+                            end do
+                        end do
+                    end if
+
+                    z = 0._wp
+                    if (p > 0) z = z_cc(l)
+                    write (*, '(A,I0,A,3(1X,I0),A,3ES12.4,A,4ES12.4,A,2ES12.4,A,I0,A,3(1X,I0))') 'dt-floor cell: rank ', &
+                           & proc_rank, ' ijk', j, k, l, ' xyz', x_cc(j), y_cc(k), z, ' rho p c |u|', rho, pres, c, &
+                           & sqrt(vel_sum), ' dt icfl vcfl', max_dt(1:2), ' ib_dist ', ib_dist, ' ib_ids', ids
+                end do
+            end do
+        end do
+
+        if (num_bad > 0) write (*, '(A,I0,A,I0,A)') 'dt-floor cells: rank ', proc_rank, ' has ', num_bad, ' (first 4 listed)'
+        call flush (6)
+
+    end subroutine s_report_dt_floor_cells
 
     !> Apply the body forces source term at each Runge-Kutta stage
     subroutine s_apply_bodyforces(q_cons_vf, q_prim_vf_in, rhs_vf_in, ldt)

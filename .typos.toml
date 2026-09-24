@@ -30,6 +30,8 @@ ordr = "ordr"         # typo for "order" in "weno_ordr" - tests param suggestion
 unknwn = "unknwn"     # typo for "unknown" - tests unknown param detection
 tru = "tru"           # typo for "true" in "when_tru" - tests dependency keys
 PNGs = "PNGs"
+lso = "lso"
+LSO = "LSO"
 arange = "arange"     # numpy function name, not a typo for "arrange"
 
 [files]
