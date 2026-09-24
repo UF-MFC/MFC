@@ -429,7 +429,8 @@ contains
         #:else
             real(wp), dimension(num_fluids), intent(out) :: alpha, alpha_rho
         #:endif
-        integer :: dir, l
+        integer               :: dir, l
+        integer, dimension(3) :: stencil_hits
 
         fluid_vel = 0._wp
         fluid_rho = 0._wp
@@ -437,12 +438,14 @@ contains
         alpha_rho = 0._wp
 
         if (lag_params%interpolation_order > 1) then
+            call s_get_barycentric_stencil_hits(pos, cell, stencil_hits)
+
             do dir = 1, num_dims
-                fluid_vel(dir) = f_interp_barycentric(pos, cell, q_prim_vf, eqn_idx%mom%beg + dir - 1, wx, wy, wz)
+                fluid_vel(dir) = f_interp_barycentric(pos, cell, q_prim_vf, eqn_idx%mom%beg + dir - 1, wx, wy, wz, stencil_hits)
             end do
 
             do l = 1, num_fluids
-                alpha_rho(l) = f_interp_barycentric(pos, cell, q_prim_vf, l, wx, wy, wz)
+                alpha_rho(l) = f_interp_barycentric(pos, cell, q_prim_vf, l, wx, wy, wz, stencil_hits)
                 fluid_rho = fluid_rho + alpha_rho(l)
             end do
 
@@ -450,12 +453,12 @@ contains
                 alpha(1) = 1._wp
             else
                 do l = 1, num_fluids - 1
-                    alpha(l) = f_interp_barycentric(pos, cell, q_prim_vf, eqn_idx%adv%beg + l - 1, wx, wy, wz)
+                    alpha(l) = f_interp_barycentric(pos, cell, q_prim_vf, eqn_idx%adv%beg + l - 1, wx, wy, wz, stencil_hits)
                 end do
                 alpha(num_fluids) = 1._wp - sum(alpha(1:num_fluids - 1))
             end if
 
-            fluid_pres = f_interp_barycentric(pos, cell, q_prim_vf, eqn_idx%E, wx, wy, wz)
+            fluid_pres = f_interp_barycentric(pos, cell, q_prim_vf, eqn_idx%E, wx, wy, wz, stencil_hits)
         else
             do dir = 1, num_dims
                 fluid_vel(dir) = q_prim_vf(eqn_idx%mom%beg + dir - 1)%sf(cell(1), cell(2), cell(3))
@@ -517,6 +520,7 @@ contains
         real(wp)                                            :: slip_velocity_x, slip_velocity_y, slip_velocity_z, beta
         real(wp)                                            :: vol_frac
         integer                                             :: dir, l
+        integer, dimension(3)                               :: stencil_hits
 
         ! Added pass params
         real(wp)               :: mach, Cam, flux_f, flux_b, SDrho, vrel_gradrho, drhodt
@@ -544,14 +548,15 @@ contains
 
         !!Interpolation - either even ordered barycentric or 0th order
         if (lag_params%interpolation_order > 1) then
-            alpha_f = f_interp_barycentric(pos, cell, q_particles, alphaf_id_loc, wx, wy, wz)
+            call s_get_barycentric_stencil_hits(pos, cell, stencil_hits)
+            alpha_f = f_interp_barycentric(pos, cell, q_particles, alphaf_id_loc, wx, wy, wz, stencil_hits)
             vol_frac = 1._wp - alpha_f
 
             do dir = 1, num_dims
-                vel_p_mean(dir) = f_interp_barycentric(pos, cell, q_particles, alphaupx_id_loc + dir - 1, wx, wy, &
-                           & wz)/max(vol_frac, 1.e-12_wp)
-                vel2_p_mean(dir) = f_interp_barycentric(pos, cell, q_particles, alphaup2x_id_loc + dir - 1, wx, wy, &
-                            & wz)/max(vol_frac, 1.e-12_wp)
+                vel_p_mean(dir) = f_interp_barycentric(pos, cell, q_particles, alphaupx_id_loc + dir - 1, wx, wy, wz, &
+                           & stencil_hits)/max(vol_frac, 1.e-12_wp)
+                vel2_p_mean(dir) = f_interp_barycentric(pos, cell, q_particles, alphaup2x_id_loc + dir - 1, wx, wy, wz, &
+                            & stencil_hits)/max(vol_frac, 1.e-12_wp)
             end do
 
             if (lag_params%added_mass_model > 0) then
@@ -560,15 +565,15 @@ contains
 
             do dir = 1, num_dims
                 if (lag_params%pressure_force .or. lag_params%added_mass_model > 0) then
-                    dp(dir) = f_interp_barycentric(pos, cell, fieldvars, dPx_id_loc + dir - 1, wx, wy, wz)
+                    dp(dir) = f_interp_barycentric(pos, cell, fieldvars, dPx_id_loc + dir - 1, wx, wy, wz, stencil_hits)
                 end if
                 if (lag_params%added_mass_model > 0) then
-                    grad_rho(dir) = f_interp_barycentric(pos, cell, fieldvars, drhox_id_loc + dir - 1, wx, wy, wz)
+                    grad_rho(dir) = f_interp_barycentric(pos, cell, fieldvars, drhox_id_loc + dir - 1, wx, wy, wz, stencil_hits)
                     rhoDuDt(dir) = (rhs_old(eqn_idx%mom%beg + dir - 1)%sf(cell(1), cell(2), &
                             & cell(3)) - fluid_vel(dir)*drhodt)/fluid_rho
                     do l = 1, num_dims
                         udot_gradu(dir) = udot_gradu(dir) + fluid_vel(l)*f_interp_barycentric(pos, cell, fieldvars, &
-                                   & duidxj_id_loc(dir, l), wx, wy, wz)
+                                   & duidxj_id_loc(dir, l), wx, wy, wz, stencil_hits)
                     end do
                 end if
             end do
@@ -863,7 +868,52 @@ contains
 
     !> This function interpolates an Eulerian field to a particle position using barycentric Lagrange interpolation with precomputed
     !! weights. Falls back to nearest-cell value if the interpolant is non-finite.
-    function f_interp_barycentric(pos, cell, field_vf, field_index, wx, wy, wz) result(val)
+    subroutine s_get_barycentric_stencil_hits(pos, cell, stencil_hits)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), dimension(3), intent(in) :: pos
+        integer, dimension(3), intent(in)  :: cell
+        integer, dimension(3), intent(out) :: stencil_hits
+        integer                            :: i, j, k, ix, jy, kz, npts, npts_z
+        integer                            :: ix_count, jy_count, kz_count
+        real(wp)                           :: tol
+
+        i = cell(1)
+        j = cell(2)
+        k = cell(3)
+
+        npts = lag_params%interpolation_order/2
+        npts_z = npts
+        if (num_dims == 2) npts_z = 0
+
+        stencil_hits = 0
+        ix_count = 0
+        do ix = i - npts, i + npts
+            ix_count = ix_count + 1
+            tol = 1.e-10_wp*dx(ix)
+            if (abs(pos(1) - x_cc(ix)) <= tol) stencil_hits(1) = ix_count
+        end do
+
+        jy_count = 0
+        do jy = j - npts, j + npts
+            jy_count = jy_count + 1
+            tol = 1.e-10_wp*dy(jy)
+            if (abs(pos(2) - y_cc(jy)) <= tol) stencil_hits(2) = jy_count
+        end do
+
+        if (num_dims == 3) then
+            kz_count = 0
+            do kz = k - npts_z, k + npts_z
+                kz_count = kz_count + 1
+                tol = 1.e-10_wp*dz(kz)
+                if (abs(pos(3) - z_cc(kz)) <= tol) stencil_hits(3) = kz_count
+            end do
+        end if
+
+    end subroutine s_get_barycentric_stencil_hits
+
+    function f_interp_barycentric(pos, cell, field_vf, field_index, wx, wy, wz, stencil_hits) result(val)
 
         $:GPU_ROUTINE(parallelism='[seq]')
 
@@ -872,11 +922,11 @@ contains
         type(scalar_field), dimension(:), intent(in) :: field_vf
         type(scalar_field), dimension(:), intent(in) :: wx, wy, wz
         integer, intent(in)                          :: field_index
+        integer, dimension(3), intent(in)            :: stencil_hits
         integer                                      :: i, j, k, ix, jy, kz, npts, npts_z, N
         integer                                      :: ix_count, jy_count, kz_count
-        integer                                      :: hit_x, hit_y, hit_z
         real(wp)                                     :: fx, fy, fz, delta_x, delta_y, delta_z
-        real(wp)                                     :: weight, numerator, denominator, xBar, val, eps, tol
+        real(wp)                                     :: weight, numerator, denominator, xBar, val, eps
 
         i = cell(1)
         j = cell(2)
@@ -888,39 +938,14 @@ contains
         if (num_dims == 2) npts_z = 0
         eps = 1.e-12_wp
 
-        ! A barycentric term divides by (pos - node). Treat nodes within a local-spacing tolerance as hits.
-        hit_x = 0
-        hit_y = 0
-        hit_z = 0
-        ix_count = 0
-        do ix = i - npts, i + npts
-            ix_count = ix_count + 1
-            tol = 1.e-10_wp*dx(ix)
-            if (abs(pos(1) - x_cc(ix)) <= tol) hit_x = ix_count
-        end do
-        jy_count = 0
-        do jy = j - npts, j + npts
-            jy_count = jy_count + 1
-            tol = 1.e-10_wp*dy(jy)
-            if (abs(pos(2) - y_cc(jy)) <= tol) hit_y = jy_count
-        end do
-        if (num_dims == 3) then
-            kz_count = 0
-            do kz = k - npts_z, k + npts_z
-                kz_count = kz_count + 1
-                tol = 1.e-10_wp*dz(kz)
-                if (abs(pos(3) - z_cc(kz)) <= tol) hit_z = kz_count
-            end do
-        end if
-
         numerator = 0._wp
         denominator = 0._wp
 
         ix_count = 0
         do ix = i - npts, i + npts
             ix_count = ix_count + 1
-            if (hit_x /= 0 .and. ix_count /= hit_x) cycle
-            if (hit_x /= 0) then
+            if (stencil_hits(1) /= 0 .and. ix_count /= stencil_hits(1)) cycle
+            if (stencil_hits(1) /= 0) then
                 fx = 1._wp
                 delta_x = 1._wp
             else
@@ -931,8 +956,8 @@ contains
             jy_count = 0
             do jy = j - npts, j + npts
                 jy_count = jy_count + 1
-                if (hit_y /= 0 .and. jy_count /= hit_y) cycle
-                if (hit_y /= 0) then
+                if (stencil_hits(2) /= 0 .and. jy_count /= stencil_hits(2)) cycle
+                if (stencil_hits(2) /= 0) then
                     fy = 1._wp
                     delta_y = 1._wp
                 else
@@ -944,8 +969,8 @@ contains
                 do kz = k - npts_z, k + npts_z
                     kz_count = kz_count + 1
                     if (num_dims == 3) then
-                        if (hit_z /= 0 .and. kz_count /= hit_z) cycle
-                        if (hit_z /= 0) then
+                        if (stencil_hits(3) /= 0 .and. kz_count /= stencil_hits(3)) cycle
+                        if (stencil_hits(3) /= 0) then
                             fz = 1._wp
                             delta_z = 1._wp
                         else
