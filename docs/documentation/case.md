@@ -517,6 +517,7 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 | `jwl_G`          | Real    | JWL++ reactive-burn rate constant.                                 |
 | `jwl_b_exp`      | Real    | JWL++ reactive-burn pressure exponent.                             |
 | `prog_burn`      | Logical | Enable kinematic JWL program burn.                                 |
+| `fluid_pp(i)%%jwl_Q` | Real | Program burn energy per unit mass of JWL fluid `i`.             |
 | `pb_D_cj`        | Real    | Programmed burn Chapman-Jouguet detonation velocity.               |
 | `pb_width`       | Real    | Programmed burn reaction zone width.                               |
 | `pb_x_det`       | Real    | Programmed burn detonation point x-coordinate.                     |
@@ -524,7 +525,9 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 | `pb_z_det`       | Real    | Programmed burn detonation point z-coordinate.                     |
 | `pb_t_det`       | Real    | Programmed burn detonation initiation time.                        |
 
-`jwl_afterburn`, `jwl_reactive`, and `prog_burn` are independent burn models that may be combined; `jwl_afterburn` and `jwl_reactive` each add their own progress equation to the conservative state.
+With `prog_burn`, a front travels from (`pb_x_det`, `pb_y_det`, `pb_z_det`) at speed `pb_D_cj` after `pb_t_det`. Each cell receives the swept fraction of `fluid_pp(JWL)%%jwl_Q` over a distance `pb_width`. The energy increment is based on the front positions at the start and end of a full flow step, so a front crossing more than one zone width in a step still deposits the prescribed energy. Progress is tied to fixed cell coordinates; use this prescribed-front model when material motion through the reaction zone is small. Use exactly one JWL fluid with positive `jwl_Q`, `pb_D_cj`, and `pb_width`. `prog_burn` cannot be combined with `jwl_reactive` or `reactive_burn`.
+
+`jwl_reactive` is a separate JWL++ control. Its source term is not wired into the solver on this branch; the bounded pressure burn below applies to `reactive_burn`.
 
 ### 6. Simulation Algorithm {#sec-simulation-algorithm}
 
@@ -1221,11 +1224,20 @@ Note: For relativistic flow, the conservative and primitive densities are differ
 | `cont_damage_s`   | Real    | Power `s` for continuum damage model                |
 | `alpha_bar`       | Real    | Damage factor (rate) for continuum damage model     |
 | `reactive_burn`   | Logical | Enable condensed-phase reactive burn                |
+| `rburn%%model`     | Integer | Burn law: 0 pressure law, 1 Garno ignition-and-growth |
 | `rburn%%k`         | Real    | Reactive-burn rate coefficient [1/s]                |
 | `rburn%%pign`      | Real    | Reactive-burn ignition pressure threshold [Pa]      |
 | `rburn%%pref`      | Real    | Reactive-burn reference pressure for the drive [Pa] |
 | `rburn%%n`         | Real    | Reactive-burn pressure-drive exponent               |
 | `rburn%%ta`        | Real    | Reactive-burn activation temperature [K] (0 = off)  |
+| `rburn%%substeps`  | Integer | Burn updates per flow step (0 = one update)          |
+| `rburn%%rho0`      | Real    | Garno reference reactant density [kg/m³]             |
+| `rburn%%q`         | Real    | Garno reaction energy per unit reacted mass [J/kg]   |
+| `rburn%%ki`, `rburn%%kg` | Real | Garno ignition and growth coefficients              |
+| `rburn%%m1`, `rburn%%m2` | Real | Garno ignition exponents                             |
+| `rburn%%n1`, `rburn%%n2`, `rburn%%n3` | Real | Garno growth exponents                   |
+
+`reactive_burn` supports two rate laws. Model 0 uses two fluids, transferring reactant mass and volume to products at fixed total energy. Model 1 uses three fluids: air (1), unreacted explosive (2), and products (3). Fluids 2 and 3 must share the same JWL coefficients. Their combined mass and volume are conserved by the reaction, while fluid 2 mass divided by total density represents Garno's `Y_R`. Set `rburn%%q` to the energy release `Q`; the source adds `Q` times the reacted mass to total energy. The JWL energy offset `Y_R Δe` is represented by `fluid_pp(2)%%qv - fluid_pp(3)%%qv = -Δe`. The standard exponents `m1 = n1 = n2 = 1` use an exact bounded local update; other exponents use a bounded second-order update. `rburn%%substeps` resolves rate feedback within a flow step. Model 1 uses MFC's pressure-equilibrium closure for cells mixing air and explosive; the paper's interface closure differs. The paper's explosive-specific rate coefficients require calibration and are not supplied as defaults.
 
 - `cont_damage` activates continuum damage model for solid materials. Requires `tau_star`, `cont_damage_s`, and `alpha_bar` to be set (empirically determined) (\cite Cao19).
 

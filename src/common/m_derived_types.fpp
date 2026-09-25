@@ -574,15 +574,21 @@ module m_derived_types
         integer :: reaction_substeps_max
     end type chemistry_parameters
 
-    !> Condensed-phase reactive-burn (programmed pressure detonation) parameters. The rate is
-    !> dlambda/dt = k (1 - lambda) ((p - pign)/pref)^n, optionally scaled by exp(-ta/T) when ta > 0.
+    !> Condensed-phase reactive-burn parameters. Model 0 is pressure-driven; model 1 is the
+    !> density-based Garno ignition-and-growth law.
     type reactive_burn_parameters
-        real(wp) :: k         !< Rate coefficient [1/s]
-        real(wp) :: pign      !< Ignition pressure threshold [Pa]
-        real(wp) :: pref      !< Reference pressure for the pressure drive [Pa]
-        real(wp) :: n         !< Pressure-drive exponent
-        real(wp) :: ta        !< Activation temperature [K] (0 = pure pressure-driven; > 0 adds exp(-ta/T))
-        integer  :: substeps  !< Operator-split sub-steps per time step (0 = source added to the flow RHS)
+        integer  :: model       !< 0 = pressure law, 1 = Garno ignition-and-growth
+        real(wp) :: k           !< Rate coefficient [1/s]
+        real(wp) :: pign        !< Ignition pressure threshold [Pa]
+        real(wp) :: pref        !< Reference pressure for the pressure drive [Pa]
+        real(wp) :: n           !< Pressure-drive exponent
+        real(wp) :: ta          !< Activation temperature [K] (0 = pure pressure-driven; > 0 adds exp(-ta/T))
+        real(wp) :: rho0        !< Reference reactant density for Garno rate [kg/m^3]
+        real(wp) :: q           !< Garno reaction energy per unit reacted mass [J/kg]
+        real(wp) :: ki, kg      !< Garno ignition and growth coefficients
+        real(wp) :: m1, m2      !< Garno ignition exponents
+        real(wp) :: n1, n2, n3  !< Garno growth exponents
+        integer  :: substeps    !< Operator-split sub-steps per time step (0 = one bounded update)
     end type reactive_burn_parameters
 
     !> Coefficients of one fluid's equation of state, resolved once at init. Held as a record per fluid rather than as parallel

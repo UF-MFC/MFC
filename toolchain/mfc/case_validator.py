@@ -190,11 +190,20 @@ PHYSICS_DOCS = {
         "title": "Condensed-Phase Reactive Burn",
         "category": "Combustion",
         "explanation": (
-            "Programmed pressure-driven burn converting a reactant fluid to a product fluid on the multi-fluid model. "
-            "Requires model_eqns = 2 or 3 and num_fluids = 2 (reactant, product) sharing the stiffened-gas EOS "
-            "(equal gamma, pi_inf) with qv_reactant > qv_product. rburn%k (> 0), rburn%pign, rburn%pref (> 0), "
+            "Pressure-driven burn converting reactant fluid 1 to product fluid 2 on the multi-fluid model. "
+            "Requires model_eqns = 2 or 3, num_fluids = 2, and qv_reactant > qv_product. "
+            "Constant-coefficient fluids must have equal gamma and pi_inf. rburn%k (> 0), rburn%pign, rburn%pref (> 0), "
             "and rburn%n (>= 0) must all be set. rburn%ta (activation temperature [K]) is optional and must be >= 0; "
             ">0 adds an Arrhenius exp(-rburn%ta/T) factor and requires fluid_pp(1)%cv > 0."
+        ),
+    },
+    "check_prog_burn": {
+        "title": "JWL Program Burn",
+        "category": "Combustion",
+        "explanation": (
+            "The prescribed front deposits the swept fraction of the JWL fluid's energy budget each step. "
+            "It requires exactly one JWL fluid, positive jwl_Q, pb_D_cj, and pb_width, and a nonnegative initiation time. "
+            "It cannot be combined with another primary burn model."
         ),
     },
     # Numerical Schemes
@@ -2271,6 +2280,8 @@ class CaseValidator:
         reactive_burn = self.get("reactive_burn", "F") == "T"
         if not reactive_burn:
             return
+        burn_model = self.get("rburn%model", 0)
+        self.prohibit(burn_model not in (0, 1), "reactive_burn requires rburn%model = 0 (pressure law) or 1 (Garno ignition-and-growth)")
         # These mirror Fortran checks that compared against the dflt_real / dflt_int
         # sentinels, so an unset parameter was a violation there. A bare
         # "is not None" guard would silently pass the unset case instead.
@@ -2278,51 +2289,85 @@ class CaseValidator:
         # Supported on the 5-equation (pressure-equilibrium) and 6-equation multi-fluid models.
         self.prohibit(model_eqns not in (2, 3), "reactive_burn requires model_eqns = 2 or 3 (5- or 6-equation multi-fluid model) to be set")
 
-        # Exactly two fluids (reactant = 1, product = 2) sharing the stiffened-gas EOS and
-        # differing only in qv; violating these silently corrupts the mass/energy balance.
-        self.prohibit(self.get("num_fluids") != 2, "reactive_burn requires num_fluids = 2 (reactant then product) to be set")
-        # A state-dependent family carries its own curve; the shared-EOS check is a stiffened-gas one.
-        state_dependent_values = {f.value for f in EOS_FAMILIES if f.state_dependent}
-        state_dependent = any(self.get(f"fluid_pp({k})%eos") in state_dependent_values for k in (1, 2))
-        for prop in () if state_dependent else ("gamma", "pi_inf"):
-            v1 = self.get(f"fluid_pp(1)%{prop}")
-            v2 = self.get(f"fluid_pp(2)%{prop}")
-            if not self._is_numeric(v1) or not self._is_numeric(v2):
-                # Unset defaults to dflt_real in the solver, so a missing value is
-                # either a negative EOS or a mismatch against the fluid that is set.
-                self.prohibit(True, f"reactive_burn requires both fluid_pp(1)%{prop} and fluid_pp(2)%{prop} to be set (reactant and product share the EOS)")
-                continue
+        rta = self.get("rburn%ta", 0.0)
+        if burn_model == 0:
+            self.prohibit(self.get("num_fluids") != 2, "pressure-law reactive_burn requires num_fluids = 2 (reactant then product)")
+            state_dependent_values = {f.value for f in EOS_FAMILIES if f.state_dependent}
+            state_dependent = any(self.get(f"fluid_pp({k})%eos") in state_dependent_values for k in (1, 2))
+            for prop in () if state_dependent else ("gamma", "pi_inf"):
+                v1 = self.get(f"fluid_pp(1)%{prop}")
+                v2 = self.get(f"fluid_pp(2)%{prop}")
+                self.prohibit(
+                    not self._is_numeric(v1) or not self._is_numeric(v2) or not math.isclose(v1, v2, rel_tol=1e-10),
+                    f"pressure-law reactive_burn requires matching fluid_pp(1)%{prop} and fluid_pp(2)%{prop}",
+                )
+            qv1 = self.get("fluid_pp(1)%qv", 0.0)
+            qv2 = self.get("fluid_pp(2)%qv", 0.0)
             self.prohibit(
-                not math.isclose(v1, v2, rel_tol=1e-10),
-                f"reactive_burn requires fluid_pp(1)%{prop} == fluid_pp(2)%{prop} (reactant and product share the EOS)",
+                self._is_numeric(qv1) and self._is_numeric(qv2) and qv1 <= qv2,
+                "pressure-law reactive_burn requires fluid_pp(1)%qv > fluid_pp(2)%qv",
             )
-        # qv defaults to 0 in the Fortran, so an unset value is treated as 0 here to match.
-        qv1 = self.get("fluid_pp(1)%qv", 0.0)
-        qv2 = self.get("fluid_pp(2)%qv", 0.0)
-        self.prohibit(
-            self._is_numeric(qv1) and self._is_numeric(qv2) and qv1 <= qv2,
-            "reactive_burn requires fluid_pp(1)%qv > fluid_pp(2)%qv (reactant releases energy on conversion to product)",
-        )
-        # The rate uses rburn%k, %pign, %pref, %n directly; an unset value defaults to a negative
-        # sentinel in the solver and silently corrupts the burn, so require each to be set.
-        rk = self.get("rburn%k")
-        self.prohibit(not self._is_numeric(rk) or rk <= 0, "reactive_burn requires rburn%k > 0 (rate coefficient [1/s])")
-        self.prohibit(self.get("rburn%pign") is None, "reactive_burn requires rburn%pign to be set (ignition pressure threshold [Pa])")
-        rpref = self.get("rburn%pref")
-        self.prohibit(not self._is_numeric(rpref) or rpref <= 0, "reactive_burn requires rburn%pref > 0 (it normalizes the pressure drive and is used as a divisor)")
-        rn = self.get("rburn%n")
-        self.prohibit(not self._is_numeric(rn) or rn < 0, "reactive_burn requires rburn%n >= 0 (pressure-drive exponent)")
-        rta = self.get("rburn%ta")
-        self.prohibit(self._is_numeric(rta) and rta < 0, "reactive_burn requires rburn%ta >= 0 (activation temperature [K]; 0 disables the Arrhenius factor)")
+            # Pressure-law coefficients are only used by model 0.
+            rk = self.get("rburn%k")
+            self.prohibit(not self._is_numeric(rk) or rk <= 0, "pressure-law reactive_burn requires rburn%k > 0 (rate coefficient [1/s])")
+            self.prohibit(self.get("rburn%pign") is None, "pressure-law reactive_burn requires rburn%pign (ignition pressure threshold [Pa])")
+            rpref = self.get("rburn%pref")
+            self.prohibit(not self._is_numeric(rpref) or rpref <= 0, "pressure-law reactive_burn requires rburn%pref > 0")
+            rn = self.get("rburn%n")
+            self.prohibit(not self._is_numeric(rn) or rn < 0, "pressure-law reactive_burn requires rburn%n >= 0")
+            self.prohibit(self._is_numeric(rta) and rta < 0, "reactive_burn requires rburn%ta >= 0")
+        else:
+            self.prohibit(self.get("num_fluids") != 3, "Garno reactive_burn requires num_fluids = 3 (air, reactant, product)")
+            eos_jwl = CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"]
+            for phase in (2, 3):
+                self.prohibit(self.get(f"fluid_pp({phase})%eos") != eos_jwl, f"Garno reactive_burn requires JWL fluid {phase}")
+            for prop in ("jwl_a", "jwl_b", "jwl_r1", "jwl_r2", "jwl_omega", "jwl_rho0"):
+                v2 = self.get(f"fluid_pp(2)%{prop}")
+                v3 = self.get(f"fluid_pp(3)%{prop}")
+                self.prohibit(
+                    not self._is_numeric(v2) or not self._is_numeric(v3) or not math.isclose(v2, v3, rel_tol=1e-10),
+                    f"Garno reactive_burn requires matching JWL {prop} for fluids 2 and 3",
+                )
+            for name in ("rho0", "q", "ki", "kg", "m1", "m2", "n1", "n2", "n3"):
+                value = self.get(f"rburn%{name}")
+                self.prohibit(not self._is_numeric(value) or not math.isfinite(value) or value < 0, f"Garno reactive_burn requires finite rburn%{name} >= 0")
+            rho0 = self.get("rburn%rho0")
+            self.prohibit(not self._is_numeric(rho0) or rho0 <= 0, "Garno reactive_burn requires rburn%rho0 > 0")
+            self.prohibit(not self._is_numeric(self.get("rburn%q")) or self.get("rburn%q") <= 0, "Garno reactive_burn requires rburn%q > 0")
+            m2 = self.get("rburn%m2")
+            self.prohibit(not self._is_numeric(m2) or m2 % 2 != 0, "Garno reactive_burn requires an even integer rburn%m2")
+            for name in ("m1", "n1"):
+                value = self.get(f"rburn%{name}")
+                self.prohibit(not self._is_numeric(value) or value < 1, f"Garno reactive_burn requires rburn%{name} >= 1")
+            self.prohibit(self._is_numeric(rta) and rta > 0, "Garno reactive_burn does not use rburn%ta")
         rsub = self.get("rburn%substeps")
         self.prohibit(
             self._is_numeric(rsub) and rsub < 0,
-            "reactive_burn requires rburn%substeps >= 0 (operator-split sub-steps per time step; 0 adds the source to the flow RHS)",
+            "reactive_burn requires rburn%substeps >= 0 (0 selects one bounded burn update per flow step)",
         )
         cv1 = self.get("fluid_pp(1)%cv")
         self.prohibit(
             self._is_numeric(rta) and rta > 0 and (not self._is_numeric(cv1) or cv1 <= 0),
             "reactive_burn with rburn%ta > 0 requires fluid_pp(1)%cv > 0 (the reactant temperature needs a physical heat capacity; cv = 0 silently disables the Arrhenius factor)",
+        )
+
+    def check_prog_burn(self):
+        if self.get("prog_burn", "F") != "T":
+            return
+        eos_jwl = CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"]
+        phases = [i for i in range(1, int(self.get("num_fluids") or 0) + 1) if self.get(f"fluid_pp({i})%eos") == eos_jwl]
+        self.prohibit(len(phases) != 1, "prog_burn requires exactly one JWL fluid")
+        if len(phases) == 1:
+            qdet = self.get(f"fluid_pp({phases[0]})%jwl_Q")
+            self.prohibit(not self._is_numeric(qdet) or qdet <= 0, "prog_burn requires fluid_pp(JWL)%jwl_Q > 0")
+        for name in ("pb_D_cj", "pb_width"):
+            value = self.get(name)
+            self.prohibit(not self._is_numeric(value) or value <= 0, f"prog_burn requires {name} > 0")
+        t_det = self.get("pb_t_det", 0)
+        self.prohibit(not self._is_numeric(t_det) or t_det < 0, "prog_burn requires pb_t_det >= 0")
+        self.prohibit(
+            self.get("jwl_reactive", "F") == "T" or self.get("reactive_burn", "F") == "T",
+            "prog_burn cannot be combined with jwl_reactive or reactive_burn",
         )
 
     def check_misc_pre_process(self):
@@ -3079,6 +3124,7 @@ class CaseValidator:
         self.check_el_particles()
         self.check_chemistry()
         self.check_reactive_burn()
+        self.check_prog_burn()
 
     def validate_simulation(self):
         """Validate simulation-specific parameters"""

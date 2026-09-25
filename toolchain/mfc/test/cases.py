@@ -3742,6 +3742,60 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             },
         )
         cases.append(define_case_d(stack, "", {}))
+        # Fluid 1 is air; fluids 2 and 3 are the same explosive material before and after reaction.
+        # Their combined partial mass and volume must be invariant under the Garno source.
+        stack.push(
+            "Garno ignition and growth",
+            {
+                "num_fluids": 3,
+                "rburn%model": 1,
+                "rburn%k": None,
+                "rburn%pign": None,
+                "rburn%pref": None,
+                "rburn%n": None,
+                "rburn%rho0": 1800.0,
+                "rburn%q": 4.0e6,
+                "rburn%ki": 1.0e9,
+                "rburn%kg": 1.0e8,
+                "rburn%m1": 1.0,
+                "rburn%m2": 4.0,
+                "rburn%n1": 1.0,
+                "rburn%n2": 1.0,
+                "rburn%n3": 2.0,
+                "fluid_pp(1)%gamma": 2.5,
+                "fluid_pp(1)%pi_inf": 0.0,
+                "fluid_pp(1)%qv": 0.0,
+                "fluid_pp(2)%eos": "jwl",
+                "fluid_pp(2)%gamma": None,
+                "fluid_pp(2)%pi_inf": None,
+                "fluid_pp(2)%qv": 1.0e6,
+                "fluid_pp(3)%eos": "jwl",
+                "fluid_pp(3)%qv": 0.0,
+                "patch_icpp(1)%alpha_rho(1)": 0.06,
+                "patch_icpp(1)%alpha(1)": 0.05,
+                "patch_icpp(1)%alpha_rho(2)": 1900.0,
+                "patch_icpp(1)%alpha(2)": 0.95,
+                "patch_icpp(1)%alpha_rho(3)": 0.0,
+                "patch_icpp(1)%alpha(3)": 0.0,
+                **{
+                    f"fluid_pp({phase})%{name}": value
+                    for phase in (2, 3)
+                    for name, value in {
+                        "jwl_a": 3.0e10,
+                        "jwl_b": 2.0e9,
+                        "jwl_r1": 4.15,
+                        "jwl_r2": 0.95,
+                        "jwl_omega": 0.3,
+                        "jwl_rho0": 1900.0,
+                    }.items()
+                },
+            },
+        )
+        cases.append(define_case_d(stack, "", {}))
+        cases.append(define_case_d(stack, "6eq", {"model_eqns": 3}))
+        cases.append(define_case_d(stack, "2 ranks", {}, ppn=2))
+        cases.append(define_case_d(stack, "nonstandard growth", {"rburn%n2": 2.0}))
+        stack.pop()
         # A Mie-Gruneisen reactant burning to JWL products: the two families share qv as the energy zero, and the
         # Arrhenius factor reads the reactant temperature from its own reference curve.
         mg_to_jwl = {
@@ -3777,13 +3831,17 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         cases.append(define_case_d(stack, "", {}))
         cases.append(define_case_d(stack, "eos=mie_gruneisen -> jwl", mg_to_jwl))
         stack.pop()
-        # Operator-split burn (rburn%substeps > 0): the source is integrated per cell after the flow
-        # update rather than entering the flow RHS, so the reaction time scale is decoupled from the
-        # acoustic CFL. Nothing else reaches s_reactive_burn_substep. Run on 2 ranks because substeps
-        # is the one integer among the rburn members: a broadcast emitted with the real kind leaves
-        # rank 1 sub-stepping a garbage count, which a single-rank golden cannot see.
+        # More than one burn update resolves pressure feedback within a flow step. Run on 2 ranks
+        # because substeps is the one integer among the rburn members: a broadcast emitted with
+        # the real kind leaves rank 1 using a garbage count.
         stack.push("substeps", {"rburn%substeps": 10})
         cases.append(define_case_d(stack, "", {}, ppn=2))
+        stack.pop()
+        # At the initial pressure, k*dt*((p-pign)/pref) = 3. The former explicit
+        # RK source could send the reactant fraction below zero in one flow step.
+        stack.push("stiff bounded burn", {"rburn%k": 6.0e9, "t_step_stop": 2, "t_step_save": 1})
+        cases.append(define_case_d(stack, "", {}))
+        cases.append(define_case_d(stack, "6eq", {"model_eqns": 3}))
         stack.pop()
         # Same burn on 2 MPI ranks: the rburn parameters must be broadcast to non-root ranks, or
         # rank 1's half of the domain burns with the sentinel default and diverges. The single-rank
@@ -3794,6 +3852,62 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         stack.pop()
 
     reactive_burn_cases()
+
+    # A prescribed front advances 0.05 per step, five times its reaction width. The
+    # cumulative front fraction must deposit all of Q in cells it passes over.
+    stack.push(
+        "1D -> JWL Program Burn -> Front Crossing",
+        {
+            "m": 49,
+            "n": 0,
+            "p": 0,
+            "dt": 1.0e-4,
+            "num_patches": 1,
+            "num_fluids": 1,
+            "model_eqns": 2,
+            "x_domain%beg": 0.0,
+            "x_domain%end": 0.1,
+            "bc_x%beg": -3,
+            "bc_x%end": -3,
+            "weno_order": 5,
+            "weno_eps": 1e-16,
+            "mapped_weno": "F",
+            "mp_weno": "F",
+            "riemann_solver": 2,
+            "wave_speeds": 1,
+            "avg_state": 2,
+            "time_stepper": 3,
+            "prog_burn": "T",
+            "pb_D_cj": 500.0,
+            "pb_width": 0.01,
+            "pb_x_det": 0.0,
+            "pb_t_det": 0.0,
+            "fluid_pp(1)%eos": "jwl",
+            "fluid_pp(1)%gamma": None,
+            "fluid_pp(1)%pi_inf": None,
+            "fluid_pp(1)%qv": None,
+            "fluid_pp(1)%jwl_a": 6.0,
+            "fluid_pp(1)%jwl_b": 0.15,
+            "fluid_pp(1)%jwl_r1": 4.0,
+            "fluid_pp(1)%jwl_r2": 1.0,
+            "fluid_pp(1)%jwl_omega": 0.3,
+            "fluid_pp(1)%jwl_rho0": 0.9,
+            "fluid_pp(1)%jwl_Q": 1.0,
+            "patch_icpp(1)%geometry": 1,
+            "patch_icpp(1)%x_centroid": 0.05,
+            "patch_icpp(1)%length_x": 0.1,
+            "patch_icpp(1)%vel(1)": 0.0,
+            "patch_icpp(1)%pres": 2.0,
+            "patch_icpp(1)%alpha_rho(1)": 0.9,
+            "patch_icpp(1)%alpha(1)": 1.0,
+            "t_step_start": 0,
+            "t_step_stop": 2,
+            "t_step_save": 1,
+        },
+    )
+    cases.append(define_case_d(stack, "", {}))
+    cases.append(define_case_d(stack, "6eq", {"model_eqns": 3}))
+    stack.pop()
 
     def ibm_burn_rate_cases():
         """Vieille's-law pressure-coupled IB burn rate (patch_ib%burn_rate_exp/pref).

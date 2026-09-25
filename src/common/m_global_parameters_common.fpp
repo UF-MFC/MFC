@@ -361,11 +361,21 @@ contains
 
         ! Condensed-phase reactive burn
         reactive_burn = .false.
+        rburn%model = 0
         rburn%k = dflt_real
         rburn%pign = dflt_real
         rburn%pref = dflt_real
         rburn%n = dflt_real
         rburn%ta = 0._wp
+        rburn%rho0 = dflt_real
+        rburn%q = dflt_real
+        rburn%ki = dflt_real
+        rburn%kg = dflt_real
+        rburn%m1 = dflt_real
+        rburn%m2 = dflt_real
+        rburn%n1 = dflt_real
+        rburn%n2 = dflt_real
+        rburn%n3 = dflt_real
         rburn%substeps = 0
 
         ! Case-optimization params: under case-opt these are compile-time constants in sim (skip assignment); in pre/post
