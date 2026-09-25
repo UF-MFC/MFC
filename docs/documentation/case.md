@@ -1224,20 +1224,20 @@ Note: For relativistic flow, the conservative and primitive densities are differ
 | `cont_damage_s`   | Real    | Power `s` for continuum damage model                |
 | `alpha_bar`       | Real    | Damage factor (rate) for continuum damage model     |
 | `reactive_burn`   | Logical | Enable condensed-phase reactive burn                |
-| `rburn%%model`     | Integer | Burn law: 0 pressure law, 1 Garno ignition-and-growth |
+| `rburn%%model`     | Integer | Burn law: 0 pressure law, 1 Ignition-and-Growth (I&G) |
 | `rburn%%k`         | Real    | Reactive-burn rate coefficient [1/s]                |
 | `rburn%%pign`      | Real    | Reactive-burn ignition pressure threshold [Pa]      |
 | `rburn%%pref`      | Real    | Reactive-burn reference pressure for the drive [Pa] |
 | `rburn%%n`         | Real    | Reactive-burn pressure-drive exponent               |
 | `rburn%%ta`        | Real    | Reactive-burn activation temperature [K] (0 = off)  |
 | `rburn%%substeps`  | Integer | Burn updates per flow step (0 = one update)          |
-| `rburn%%rho0`      | Real    | Garno reference reactant density [kg/m³]             |
-| `rburn%%q`         | Real    | Garno reaction energy per unit reacted mass [J/kg]   |
-| `rburn%%ki`, `rburn%%kg` | Real | Garno ignition and growth coefficients              |
-| `rburn%%m1`, `rburn%%m2` | Real | Garno ignition exponents                             |
-| `rburn%%n1`, `rburn%%n2`, `rburn%%n3` | Real | Garno growth exponents                   |
+| `rburn%%rho0`      | Real    | Reference reactant density [kg/m³]                   |
+| `rburn%%q`         | Real    | Reaction energy per unit reacted mass [J/kg]         |
+| `rburn%%ki`, `rburn%%kg` | Real | Ignition and growth coefficients                    |
+| `rburn%%m1`, `rburn%%m2` | Real | Ignition exponents                                   |
+| `rburn%%n1`, `rburn%%n2`, `rburn%%n3` | Real | Growth exponents                         |
 
-`reactive_burn` supports two rate laws. Model 0 uses two fluids, transferring reactant mass and volume to products at fixed total energy. Model 1 uses three fluids: air (1), unreacted explosive (2), and products (3). Fluids 2 and 3 must share the same JWL coefficients. Their combined mass and volume are conserved by the reaction, while fluid 2 mass divided by total density represents Garno's `Y_R`. Set `rburn%%q` to the energy release `Q`; the source adds `Q` times the reacted mass to total energy. The JWL energy offset `Y_R Δe` is represented by `fluid_pp(2)%%qv - fluid_pp(3)%%qv = -Δe`. The standard exponents `m1 = n1 = n2 = 1` use an exact bounded local update; other exponents use a bounded second-order update. `rburn%%substeps` resolves rate feedback within a flow step. Model 1 uses MFC's pressure-equilibrium closure for cells mixing air and explosive; the paper's interface closure differs. The paper's explosive-specific rate coefficients require calibration and are not supplied as defaults.
+`reactive_burn` supports two rate laws. Model 0 uses two fluids, transferring reactant mass and volume to products at fixed total energy. Model 1 is the Ignition-and-Growth (I&G) model, using three fluids: air (1), unreacted explosive (2), and products (3). Fluids 2 and 3 must share the same JWL coefficients. Their combined mass and volume are conserved by the reaction, while fluid 2 mass divided by total density is the reactant mass fraction `Y_R` in Garno's formulation. Set `rburn%%q` to the energy release `Q`; the source adds `Q` times the reacted mass to total energy. The JWL energy offset `Y_R Δe` is represented by `fluid_pp(2)%%qv - fluid_pp(3)%%qv = -Δe`. The standard exponents `m1 = n1 = n2 = 1` use an exact bounded local update; other exponents use a bounded second-order update. `rburn%%substeps` resolves rate feedback within a flow step. Model 1 uses MFC's pressure-equilibrium closure for cells mixing air and explosive; the paper's interface closure differs. The paper's explosive-specific rate coefficients require calibration and are not supplied as defaults.
 
 - `cont_damage` activates continuum damage model for solid materials. Requires `tau_star`, `cont_damage_s`, and `alpha_bar` to be set (empirically determined) (\cite Cao19).
 

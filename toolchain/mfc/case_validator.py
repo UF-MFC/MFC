@@ -2281,7 +2281,7 @@ class CaseValidator:
         if not reactive_burn:
             return
         burn_model = self.get("rburn%model", 0)
-        self.prohibit(burn_model not in (0, 1), "reactive_burn requires rburn%model = 0 (pressure law) or 1 (Garno ignition-and-growth)")
+        self.prohibit(burn_model not in (0, 1), "reactive_burn requires rburn%model = 0 (pressure law) or 1 (Ignition-and-Growth, I&G)")
         # These mirror Fortran checks that compared against the dflt_real / dflt_int
         # sentinels, so an unset parameter was a violation there. A bare
         # "is not None" guard would silently pass the unset case instead.
@@ -2317,29 +2317,29 @@ class CaseValidator:
             self.prohibit(not self._is_numeric(rn) or rn < 0, "pressure-law reactive_burn requires rburn%n >= 0")
             self.prohibit(self._is_numeric(rta) and rta < 0, "reactive_burn requires rburn%ta >= 0")
         else:
-            self.prohibit(self.get("num_fluids") != 3, "Garno reactive_burn requires num_fluids = 3 (air, reactant, product)")
+            self.prohibit(self.get("num_fluids") != 3, "Ignition-and-Growth reactive_burn requires num_fluids = 3 (air, reactant, product)")
             eos_jwl = CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"]
             for phase in (2, 3):
-                self.prohibit(self.get(f"fluid_pp({phase})%eos") != eos_jwl, f"Garno reactive_burn requires JWL fluid {phase}")
+                self.prohibit(self.get(f"fluid_pp({phase})%eos") != eos_jwl, f"Ignition-and-Growth reactive_burn requires JWL fluid {phase}")
             for prop in ("jwl_a", "jwl_b", "jwl_r1", "jwl_r2", "jwl_omega", "jwl_rho0"):
                 v2 = self.get(f"fluid_pp(2)%{prop}")
                 v3 = self.get(f"fluid_pp(3)%{prop}")
                 self.prohibit(
                     not self._is_numeric(v2) or not self._is_numeric(v3) or not math.isclose(v2, v3, rel_tol=1e-10),
-                    f"Garno reactive_burn requires matching JWL {prop} for fluids 2 and 3",
+                    f"Ignition-and-Growth reactive_burn requires matching JWL {prop} for fluids 2 and 3",
                 )
             for name in ("rho0", "q", "ki", "kg", "m1", "m2", "n1", "n2", "n3"):
                 value = self.get(f"rburn%{name}")
-                self.prohibit(not self._is_numeric(value) or not math.isfinite(value) or value < 0, f"Garno reactive_burn requires finite rburn%{name} >= 0")
+                self.prohibit(not self._is_numeric(value) or not math.isfinite(value) or value < 0, f"Ignition-and-Growth reactive_burn requires finite rburn%{name} >= 0")
             rho0 = self.get("rburn%rho0")
-            self.prohibit(not self._is_numeric(rho0) or rho0 <= 0, "Garno reactive_burn requires rburn%rho0 > 0")
-            self.prohibit(not self._is_numeric(self.get("rburn%q")) or self.get("rburn%q") <= 0, "Garno reactive_burn requires rburn%q > 0")
+            self.prohibit(not self._is_numeric(rho0) or rho0 <= 0, "Ignition-and-Growth reactive_burn requires rburn%rho0 > 0")
+            self.prohibit(not self._is_numeric(self.get("rburn%q")) or self.get("rburn%q") <= 0, "Ignition-and-Growth reactive_burn requires rburn%q > 0")
             m2 = self.get("rburn%m2")
-            self.prohibit(not self._is_numeric(m2) or m2 % 2 != 0, "Garno reactive_burn requires an even integer rburn%m2")
+            self.prohibit(not self._is_numeric(m2) or m2 % 2 != 0, "Ignition-and-Growth reactive_burn requires an even integer rburn%m2")
             for name in ("m1", "n1"):
                 value = self.get(f"rburn%{name}")
-                self.prohibit(not self._is_numeric(value) or value < 1, f"Garno reactive_burn requires rburn%{name} >= 1")
-            self.prohibit(self._is_numeric(rta) and rta > 0, "Garno reactive_burn does not use rburn%ta")
+                self.prohibit(not self._is_numeric(value) or value < 1, f"Ignition-and-Growth reactive_burn requires rburn%{name} >= 1")
+            self.prohibit(self._is_numeric(rta) and rta > 0, "Ignition-and-Growth reactive_burn does not use rburn%ta")
         rsub = self.get("rburn%substeps")
         self.prohibit(
             self._is_numeric(rsub) and rsub < 0,

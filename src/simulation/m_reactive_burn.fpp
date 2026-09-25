@@ -5,7 +5,7 @@
 #:include 'macros.fpp'
 #:include 'case.fpp'
 
-!> @brief Bounded pressure burn and Garno ignition-and-growth source for the multi-fluid model. Garno uses air (fluid 1), unreacted
+!> @brief Bounded pressure burn and ignition-and-growth source for the multi-fluid model. I&G uses air (fluid 1), unreacted
 !! explosive (fluid 2), and products (fluid 3). The last two share an EOS; their combined partial density and volume fraction
 !! represent one material.
 module m_reactive_burn
@@ -48,10 +48,10 @@ contains
 
     end subroutine s_burn_frequency
 
-    !> Garno's RI + RG. Since dY_R/dt = -(RI + RG), this is a mass-fraction rate, not a frequency.
-    subroutine s_garno_rate(rho, alpha_rho_react, rate)
+    !> I&G rate based on Garno's formulation. Since dY_R/dt = -(RI + RG), this is a mass-fraction rate, not a frequency.
+    subroutine s_ignition_growth_rate(rho, alpha_rho_react, rate)
 
-        $:GPU_ROUTINE(function_name='s_garno_rate', parallelism='[seq]', cray_inline=True)
+        $:GPU_ROUTINE(function_name='s_ignition_growth_rate', parallelism='[seq]', cray_inline=True)
 
         real(wp), intent(in)  :: rho, alpha_rho_react
         real(wp), intent(out) :: rate
@@ -64,12 +64,12 @@ contains
         rate = rburn%ki*y_react**rburn%m1*abs(1._wp - density_ratio)**rburn%m2 + rburn%kg*y_react**rburn%n1*(1._wp - y_react) &
                                               & **rburn%n2*density_ratio**rburn%n3
 
-    end subroutine s_garno_rate
+    end subroutine s_ignition_growth_rate
 
-    !> Bounded update; the common Garno exponents reduce to an exactly solvable logistic equation.
-    subroutine s_garno_survival(rho, alpha_rho_react, dtime, survival)
+    !> Bounded update; the common I&G exponents reduce to an exactly solvable logistic equation.
+    subroutine s_ignition_growth_survival(rho, alpha_rho_react, dtime, survival)
 
-        $:GPU_ROUTINE(function_name='s_garno_survival', parallelism='[seq]', cray_inline=True)
+        $:GPU_ROUTINE(function_name='s_ignition_growth_survival', parallelism='[seq]', cray_inline=True)
 
         real(wp), intent(in)  :: rho, alpha_rho_react, dtime
         real(wp), intent(out) :: survival
@@ -87,18 +87,18 @@ contains
             decay = exp(-c*dtime)
             survival = min(decay/max(1._wp - (b/c)*y_react*(1._wp - decay), sgm_eps), 1._wp)
         else
-            call s_garno_rate(rho, alpha_rho_react, rate)
+            call s_ignition_growth_rate(rho, alpha_rho_react, rate)
             if (rate <= 0._wp) return
             y_mid = y_react*exp(-0.5_wp*rate*dtime/max(y_react, sgm_eps))
             if (y_mid <= sgm_eps) then
                 survival = 0._wp
             else
-                call s_garno_rate(rho, rho*y_mid, rate)
+                call s_ignition_growth_rate(rho, rho*y_mid, rate)
                 survival = exp(-rate*dtime/y_mid)
             end if
         end if
 
-    end subroutine s_garno_survival
+    end subroutine s_ignition_growth_survival
 
     !> Integrate the local burn with a bounded source update.
     !! @param q_cons_vf  Conserved variables, updated in place
@@ -161,7 +161,7 @@ contains
                             alpha_rho(1) = alpha_rho(1)*survival
                             alpha_rho(2) = alpha_rho(2) + dmass
                         else
-                            call s_garno_survival(rho, alpha_rho(2), dt_sub, survival)
+                            call s_ignition_growth_survival(rho, alpha_rho(2), dt_sub, survival)
                             if (survival >= 1._wp) exit
                             dlambda = alpha(2)*(1._wp - survival)
                             dmass = alpha_rho(2)*(1._wp - survival)

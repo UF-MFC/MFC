@@ -1,44 +1,10 @@
-This file was created on 2026-09-25 04:42:01.426269.
+This file was created on 2026-09-25 13:31:23.388495.
 
 mfc.sh:
 
-    Invocation: test --only Reactive Burn --generate --no-build --no-gpu -j 1
+    Invocation: test --only Ignition-and-Growth (I&G) --generate --no-gpu -j 1
     Lock:       mpi=Yes & gpu=No & debug=No & reldebug=No & gcov=No & unified=No & single=No & mixed=No & fastmath=No
-    Git:        55c75ac18b5ff10d2f11f19c557a61d1e310e03f on fix/program-reactive-burn (dirty)
-
-simulation:
-
-    CMake Configuration:
-
-        CMake v4.3.2 on Fahads-MacBook-Pro.local
-
-        C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
-        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
-
-        PRE_PROCESS   : OFF
-        SIMULATION    : ON
-        POST_PROCESS  : OFF
-        SYSCHECK      : OFF
-        DOCUMENTATION : OFF
-        ALL           : OFF
-
-        MPI     : ON
-        OpenACC : OFF
-        OpenMP  : OFF
-
-        Fypp    : /Users/fahadnabid/code/mfc-burn-stability/build/venv/bin/fypp
-        Doxygen :
-
-        Build Type : Release
-
-    Configuration Environment:
-
-        CC       : /usr/bin/cc
-        CXX      : /usr/bin/c++
-        FC       : /opt/homebrew/bin/gfortran
-        OMPI_CC  :
-        OMPI_CXX :
-        OMPI_FC  :
+    Git:        13d558b9940acab12c5fe9e48b230af8a1620642 on HEAD (dirty)
 
 syscheck:
 
@@ -74,6 +40,40 @@ syscheck:
         OMPI_CXX :
         OMPI_FC  :
 
+simulation:
+
+    CMake Configuration:
+
+        CMake v4.3.2 on Fahads-MacBook-Pro.local
+
+        C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
+        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
+
+        PRE_PROCESS   : OFF
+        SIMULATION    : ON
+        POST_PROCESS  : OFF
+        SYSCHECK      : OFF
+        DOCUMENTATION : OFF
+        ALL           : OFF
+
+        MPI     : ON
+        OpenACC : OFF
+        OpenMP  : OFF
+
+        Fypp    : /Users/fahadnabid/code/mfc-burn-stability/build/venv/bin/fypp
+        Doxygen :
+
+        Build Type : Release
+
+    Configuration Environment:
+
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /opt/homebrew/bin/gfortran
+        OMPI_CC  :
+        OMPI_CXX :
+        OMPI_FC  :
+
 pre_process:
 
     CMake Configuration:
@@ -86,6 +86,40 @@ pre_process:
         PRE_PROCESS   : ON
         SIMULATION    : OFF
         POST_PROCESS  : OFF
+        SYSCHECK      : OFF
+        DOCUMENTATION : OFF
+        ALL           : OFF
+
+        MPI     : ON
+        OpenACC : OFF
+        OpenMP  : OFF
+
+        Fypp    : /Users/fahadnabid/code/mfc-burn-stability/build/venv/bin/fypp
+        Doxygen :
+
+        Build Type : Release
+
+    Configuration Environment:
+
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /opt/homebrew/bin/gfortran
+        OMPI_CC  :
+        OMPI_CXX :
+        OMPI_FC  :
+
+post_process:
+
+    CMake Configuration:
+
+        CMake v4.3.2 on Fahads-MacBook-Pro.local
+
+        C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
+        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
+
+        PRE_PROCESS   : OFF
+        SIMULATION    : OFF
+        POST_PROCESS  : ON
         SYSCHECK      : OFF
         DOCUMENTATION : OFF
         ALL           : OFF

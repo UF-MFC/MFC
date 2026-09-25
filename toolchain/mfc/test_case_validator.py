@@ -75,7 +75,7 @@ REACTIVE_BURN = {
     "patch_icpp(1)%alpha(2)": 0.0,
 }
 
-GARNO_BURN = {
+IGNITION_GROWTH_BURN = {
     **REACTIVE_BURN,
     "num_fluids": 3,
     "rburn%model": 1,
@@ -359,25 +359,25 @@ class TestReactiveBurnFluidPairing(ConstraintTestCase):
     def test_accepts_valid_configuration(self):
         self.assertAccepts(REACTIVE_BURN)
 
-    def test_accepts_garno_ignition_and_growth(self):
-        self.assertAccepts(GARNO_BURN)
+    def test_accepts_ignition_growth(self):
+        self.assertAccepts(IGNITION_GROWTH_BURN)
 
-    def test_rejects_garno_without_required_density(self):
-        params = {k: v for k, v in GARNO_BURN.items() if k != "rburn%rho0"}
-        self.assertRejects(params, "Garno reactive_burn requires rburn%rho0 > 0")
+    def test_rejects_ignition_growth_without_required_density(self):
+        params = {k: v for k, v in IGNITION_GROWTH_BURN.items() if k != "rburn%rho0"}
+        self.assertRejects(params, "Ignition-and-Growth reactive_burn requires rburn%rho0 > 0")
 
-    def test_rejects_garno_wrong_material_count(self):
-        self.assertRejects({**GARNO_BURN, "num_fluids": 2}, "Garno reactive_burn requires num_fluids = 3")
+    def test_rejects_ignition_growth_wrong_material_count(self):
+        self.assertRejects({**IGNITION_GROWTH_BURN, "num_fluids": 2}, "Ignition-and-Growth reactive_burn requires num_fluids = 3")
 
-    def test_rejects_garno_mismatched_jwl(self):
-        self.assertRejects({**GARNO_BURN, "fluid_pp(3)%jwl_a": 2.0e10}, "matching JWL jwl_a")
+    def test_rejects_ignition_growth_mismatched_jwl(self):
+        self.assertRejects({**IGNITION_GROWTH_BURN, "fluid_pp(3)%jwl_a": 2.0e10}, "matching JWL jwl_a")
 
-    def test_rejects_garno_odd_ignition_exponent(self):
-        self.assertRejects({**GARNO_BURN, "rburn%m2": 3.0}, "even integer rburn%m2")
+    def test_rejects_ignition_growth_odd_ignition_exponent(self):
+        self.assertRejects({**IGNITION_GROWTH_BURN, "rburn%m2": 3.0}, "even integer rburn%m2")
 
-    def test_rejects_garno_missing_heat_release(self):
-        params = {k: v for k, v in GARNO_BURN.items() if k != "rburn%q"}
-        self.assertRejects(params, "Garno reactive_burn requires rburn%q > 0")
+    def test_rejects_ignition_growth_missing_heat_release(self):
+        params = {k: v for k, v in IGNITION_GROWTH_BURN.items() if k != "rburn%q"}
+        self.assertRejects(params, "Ignition-and-Growth reactive_burn requires rburn%q > 0")
 
 
 class TestPhaseChangeFluidPairing(ConstraintTestCase):

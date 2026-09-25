@@ -3743,9 +3743,9 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         )
         cases.append(define_case_d(stack, "", {}))
         # Fluid 1 is air; fluids 2 and 3 are the same explosive material before and after reaction.
-        # Their combined partial mass and volume must be invariant under the Garno source.
+        # Their combined partial mass and volume must be invariant under the I&G source.
         stack.push(
-            "Garno ignition and growth",
+            "Ignition-and-Growth (I&G)",
             {
                 "num_fluids": 3,
                 "rburn%model": 1,
