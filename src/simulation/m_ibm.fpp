@@ -638,6 +638,8 @@ contains
                 end if
             end do
             $:END_GPU_PARALLEL_LOOP()
+            @:DEALLOCATE(alpha_rho_IP_buf, alpha_IP_buf, pres_IP_buf, c_IP_buf, vel_IP_buf, r_IP_buf, v_IP_buf, pb_IP_buf, &
+                         & mv_IP_buf, nmom_IP_buf, presb_IP_buf, massv_IP_buf, Ys_IP_buf)
         end if
 
     end subroutine s_ibm_correct_state
