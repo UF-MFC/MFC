@@ -1104,6 +1104,11 @@ contains
         ! case never assigns.
         $:GPU_UPDATE(device='[jwl_afterburn, jwl_reactive]')
 
+        ! Read per-cell in the m_lso_filter phi_p/gas_mask products and the stability-criteria
+        ! reduction, so the device copy must carry the host value; an unsynced .false. there makes
+        ! every cell look like gas, zeroing phi_p and u_p. Not case-optimized, so sync unconditionally.
+        $:GPU_UPDATE(device='[ib]')
+
         #:if not MFC_CASE_OPTIMIZATION
             $:GPU_UPDATE(device='[wenojs, mapped_weno, wenoz, teno]')
             $:GPU_UPDATE(device='[wenoz_q]')
