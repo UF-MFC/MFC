@@ -787,7 +787,7 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `lso_down_sample_factor`| Integer | Stride factor for coarsening the filtered output grid (1 = no coarsening). Must divide each active global and per-rank cell count. Reduced-grid post-processing requires shared parallel I/O; see @ref lso-filter-testing for supported layouts. |
 | `lso_stat_wrt`          | Logical | Write 11 filtered product blocks (11/21/33 scalar components in 1D/2D/3D). Requires `num_fluids=1`, `lso_filter_wrt=T`, `parallel_io=T` and `particles_lagrange=F`; particle products use IBM markers. |
 | `lso_R_gas`             | Real    | Specific gas constant [J/(kg·K)] for temperature reconstruction used in stat fields. Default 287.0 (dry air). |
-| `filter_sigma`          | Real    | Target Gaussian filter standard deviation in physical units |
+| `filter_sigma`          | Real    | Target Gaussian filter standard deviation in physical units. On a stretched x grid (`stretch_x=T`; y and z uniform, `lso_down_sample_factor=1`, no `lso_pp_filter`) simulation replaces the x weights with ceil((σ/(1.2 Δx_min))²) passes of per-cell weights whose zeroth, first and second physical moments are exact. |
 | `lso_n_passes_x`        | Integer | Number of filter passes in x (auto-computed by toolchain from `filter_sigma` and grid spacing) |
 | `lso_n_passes_y`        | Integer | Number of filter passes in y (auto-computed) |
 | `lso_n_passes_z`        | Integer | Number of filter passes in z (auto-computed) |

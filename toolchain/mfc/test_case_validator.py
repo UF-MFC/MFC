@@ -262,6 +262,14 @@ class TestLsoFilterConstraints(unittest.TestCase):
         self.assertTrue(any("IBM LSO post-process filtering requires parallel_io" in error for error in self.errors(params, "post_process")))
         self.assertEqual(self.errors({**params, "parallel_io": "T"}, "post_process"), [])
 
+    def test_stretched_x_only_without_decimation_or_post_filter(self):
+        stretched = {**self.BASE, "stretch_x": "T"}
+        for stage in ("simulation", "post_process"):
+            self.assertEqual(self.errors(stretched, stage), [])
+            self.assertTrue(any("uniform y and z" in e for e in self.errors({**self.BASE, "stretch_y": "T"}, stage)))
+            self.assertTrue(any("stretched x" in e for e in self.errors({**stretched, "m": 31, "lso_down_sample_factor": 2}, stage)))
+        self.assertTrue(any("uniform x" in e for e in self.errors({**stretched, "lso_pp_filter": "T"}, "post_process")))
+
     def test_filter_design_fails_when_tolerance_is_unreachable(self):
         with self.assertRaisesRegex(ValueError, "did not reach"):
             find_min_lso_passes(1.0, conv_tol=0.0, max_passes=1, n_xi=16)

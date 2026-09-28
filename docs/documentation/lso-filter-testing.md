@@ -15,7 +15,8 @@ pass can widen the filter by filtering the products and the gas mask again.
 The 11 product blocks currently require one fluid. They use `lso_R_gas` for ideal and stiffened gases and the common EOS
 temperature interface for state-dependent families. Closure reconstruction is currently
 limited to one calorically perfect ideal or stiffened gas. Chemistry, state-dependent
-EOS closures, and stretched grids remain outside the closure acceptance scope. Serial LSO
+EOS closures, and stretched y or z grids remain outside the closure acceptance scope. A stretched x grid
+is supported in situ (below). Serial LSO
 output is implemented. Simulation downsampling uses coarse-grid MPI views and requires
 divisibility in every active grid direction. Reduced-grid post-processing requires
 `parallel_io=T`, `file_per_process=F`, at least two coarse cells in each active direction,
@@ -387,6 +388,20 @@ The production gate consists of:
 CPU success is not evidence of GPU race freedom. Compare device output with the CPU
 reference for every statistical field, including the viscous products.
 
+## Stretched x
+
+The designed weights assume uniform spacing. On a stretched x grid, simulation instead applies
+N = ceil((σ/(1.2 Δx_min))²) passes of 9-point per-cell weights: the Gaussian with variance σ²/N sampled
+at the true cell centres and weighted by cell width, then corrected on the three central points so each
+pass has unit sum, zero mean and variance σ²/N in physical units. All weights are nonnegative (checked
+at setup), so the filter is monotone; where Δx is coarse relative to σ/√N the pass reduces to an exact
+three-point diffusion step. Composed, the passes give variance σ² everywhere on the grid.
+
+Acceptance, on a 488 x 240 x 240 stretched-x IBM bed (2,750 spheres, periodic y/z, 7 x passes):
+the GPU output matches an independent NumPy recomputation from the saved raw state to 3.5e-15
+relative for every conserved variable and for the φ_p, ρ and ρu statistics, on 4 and on 16 ranks.
+`2D -> LSO Filter -> Stretched x` is the regression test.
+
 ## Validation tests
 
 Unit tests must reject:
@@ -394,7 +409,7 @@ Unit tests must reject:
 - statistics without filtered output;
 - statistical output without parallel I/O;
 - nonpositive `filter_sigma`;
-- stretched grids;
+- stretched y or z grids, and stretched x with LSO downsampling or `lso_pp_filter`;
 - non-divisible LSO downsampling;
 - closures without statistics;
 - closures for chemistry, multiple fluids, state-dependent EOS families, or nonpositive

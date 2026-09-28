@@ -4320,6 +4320,9 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         stack.push("2D", dim2d)
         stack.push("LSO Filter", {"lso_filter": "T", "lso_filter_wrt": "T", "filter_sigma": 0.06, "fd_order": 1, "parallel_io": "F", "cons_vars_wrt": "T"})
         cases.append(define_case_d(stack, "", {}))
+        # Stretching widens x beyond [0, 1], so the patches are widened to cover it.
+        stretch = {"stretch_x": "T", "a_x": 2.0, "x_a": 0.3, "x_b": 0.7, "loops_x": 1}
+        cases.append(define_case_d(stack, "Stretched x", {**stretch, **{f"patch_icpp({i})%length_x": 4 for i in (1, 2, 3)}}))
         cases.append(
             define_case_d(
                 stack,

@@ -4,6 +4,38 @@
 
 #:include 'macros.fpp'
 
+#! Stretched-x LSO filter: lso_n_passes_xp passes of the per-cell weights lso_wx over fields FLD(1:NV).
+#:def LSO_X_PHYS_PASSES(FLD, NV, REFRESH)
+    do ipass = 1, lso_n_passes_xp
+        do i = 1, ${NV}$
+            $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, sx, qs]')
+            do l = 0, p
+                do k = 0, n
+                    do j = 0, m
+                        qs = 0._wp
+                        $:GPU_LOOP(parallelism='[seq]')
+                        do sx = -4, 4
+                            qs = qs + lso_wx(sx, j)*real(${FLD}$(i)%sf(j + sx, k, l), wp)
+                        end do
+                        lso_tmp(j, k, l) = qs
+                    end do
+                end do
+            end do
+            $:END_GPU_PARALLEL_LOOP()
+            $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+            do l = 0, p
+                do k = 0, n
+                    do j = 0, m
+                        ${FLD}$(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)
+                    end do
+                end do
+            end do
+            $:END_GPU_PARALLEL_LOOP()
+        end do
+        if (ipass < lso_n_passes_xp) call ${REFRESH}$
+    end do
+#:enddef
+
 !> @brief LSO variable-weight Gaussian filter for conserved variables at save steps.
 !!
 !! 9-point symmetric FIR stencil
@@ -35,6 +67,14 @@ module m_lso_filter
     ! Scratch buffer for one directional pass (interior only).
     real(wp), allocatable, dimension(:,:,:) :: lso_tmp
     $:GPU_DECLARE(create='[lso_tmp]')
+
+    ! Stretched x: the designed weights assume uniform spacing, so x instead takes lso_n_passes_xp passes of per-cell 9-point
+    ! Gaussian quadrature weights whose physical moments are exact: sum 1, mean 0, variance filter_sigma**2/lso_n_passes_xp.
+    real(wp), parameter :: lso_xp_sigma_cells = 1.2_wp  !< per-pass sigma in finest cells; keeps the +-4 stencil at 3.3 sigma
+    logical :: lso_x_ready = .false., lso_x_phys = .false.
+    integer :: lso_n_passes_xp = 0
+    real(wp), allocatable, dimension(:,:) :: lso_wx
+    $:GPU_DECLARE(create='[lso_wx]')
 
     ! Filtered copy of the conserved variables (lso_filter_wrt = T).
     type(scalar_field), allocatable :: q_filt_vf(:)
@@ -165,11 +205,52 @@ contains
 
     end subroutine s_initialize_lso_filter_module
 
+    !> Detect a stretched x grid and build lso_wx. Called on first use: the grid ghosts are filled after module setup.
+    impure subroutine s_lso_setup_x_weights()
+
+        integer  :: j, s
+        real(wp) :: dx_lo, dx_hi, sig_p, var_p, a, b, r1, r2, cm, cp
+        real(wp) :: d(-4:4), w(-4:4)
+
+        lso_x_ready = .true.
+        dx_lo = minval(dx(0:m)); dx_hi = maxval(dx(0:m))
+#ifdef MFC_MPI
+        call s_mpi_allreduce_min(minval(dx(0:m)), dx_lo)
+        call s_mpi_allreduce_max(maxval(dx(0:m)), dx_hi)
+#endif
+        lso_x_phys = dx_hi - dx_lo > 1.e-6_wp*dx_lo
+        if (.not. lso_x_phys) return
+        if (lso_down_sample_factor > 1) call s_mpi_abort("LSO: a stretched x grid requires lso_down_sample_factor = 1")
+
+        lso_n_passes_xp = max(1, ceiling((filter_sigma/(lso_xp_sigma_cells*dx_lo))**2))
+        var_p = filter_sigma**2/real(lso_n_passes_xp, wp)
+        sig_p = sqrt(var_p)
+        @:ALLOCATE(lso_wx(-4:4, 0:m))
+        do j = 0, m
+            d = x_cc(j - 4:j + 4) - x_cc(j)
+            w = exp(-0.5_wp*(d/sig_p)**2)*dx(j - 4:j + 4)
+            w = w/sum(w)
+            ! Restore the exact mean and variance on the three central points (the missing variance where sig_p < dx).
+            a = -d(-1); b = d(1)
+            r1 = -sum(w*d); r2 = var_p - sum(w*d*d)
+            cm = (r2 - r1*b)/(a*(a + b)); cp = (r2 + r1*a)/(b*(a + b))
+            w(-1) = w(-1) + cm; w(1) = w(1) + cp; w(0) = w(0) - cm - cp
+            if (minval(w) < 0._wp) call s_mpi_abort("LSO: negative stretched-x filter weight; x grid varies too fast")
+            lso_wx(:,j) = w
+        end do
+        $:GPU_UPDATE(device='[lso_wx]')
+        if (proc_rank == 0) print '(A,I0,A,ES11.4)', ' LSO: stretched x, ', lso_n_passes_xp, ' moment-exact passes, sigma_p ', sig_p
+
+    end subroutine s_lso_setup_x_weights
+
     impure subroutine s_finalize_lso_filter_module()
 
         integer :: i
 
         @:DEALLOCATE(lso_tmp)
+        if (allocated(lso_wx)) then
+            @:DEALLOCATE(lso_wx)
+        end if
 
         if (lso_filter_wrt) then
             do i = 1, sys_size
@@ -356,14 +437,18 @@ contains
     impure subroutine s_apply_lso_filter(q_cons_vf)
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
-        integer                           :: i, ipass, j, k, l, nv
-        real(wp)                          :: c0, c1, c2, c3, c4
+        integer                           :: i, ipass, j, k, l, nv, sx
+        real(wp)                          :: c0, c1, c2, c3, c4, qs
 
         nv = size(q_cons_vf)
+        if (.not. lso_x_ready) call s_lso_setup_x_weights()
 
         call nvtxStartRange("LSO-FILTER-X")
         call s_lso_filter_ghost_refresh(q_cons_vf, 1)
-        do ipass = 1, lso_n_passes_x
+        if (lso_x_phys) then
+            $:LSO_X_PHYS_PASSES('q_cons_vf', 'nv', 's_lso_filter_ghost_refresh(q_cons_vf, 1)')
+        end if
+        do ipass = 1, merge(0, lso_n_passes_x, lso_x_phys)
             c0 = lso_a_x(1, ipass)
             c1 = lso_a_x(2, ipass)
             c2 = lso_a_x(3, ipass)
@@ -1432,11 +1517,15 @@ contains
     !! physical-boundary extrapolation as the flow and mask filters to preserve complementary volume fractions.
     impure subroutine s_apply_lso_stat_filter()
 
-        integer  :: i, ipass, j, k, l
-        real(wp) :: c0, c1, c2, c3, c4
+        integer  :: i, ipass, j, k, l, sx
+        real(wp) :: c0, c1, c2, c3, c4, qs
 
+        if (.not. lso_x_ready) call s_lso_setup_x_weights()
         call s_lso_stat_ghost_refresh(1)
-        do ipass = 1, lso_n_passes_x
+        if (lso_x_phys) then
+            $:LSO_X_PHYS_PASSES('q_lso_stat_vf', 'n_lso_stat', 's_lso_stat_ghost_refresh(1)')
+        end if
+        do ipass = 1, merge(0, lso_n_passes_x, lso_x_phys)
             c0 = lso_a_x(1, ipass)
             c1 = lso_a_x(2, ipass)
             c2 = lso_a_x(3, ipass)
