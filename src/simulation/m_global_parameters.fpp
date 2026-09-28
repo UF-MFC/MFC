@@ -236,6 +236,7 @@ module m_global_parameters
     integer            :: n_lso_stat           !< Number of statistical product fields
     integer            :: m_lso_ds, n_lso_ds, p_lso_ds
     integer            :: m_glb_lso_ds, n_glb_lso_ds, p_glb_lso_ds
+    integer            :: lso_ds_lo(3)         !< Global coarse index of this rank's first LSO coarse cell
     integer            :: lso_stat_phi_p_beg, lso_stat_phi_p_end
     integer            :: lso_stat_rho_beg, lso_stat_rho_end
     integer            :: lso_stat_rhoke_beg, lso_stat_rhoke_end
@@ -566,6 +567,7 @@ contains
         n_lso_stat = 0
         m_lso_ds = 0; n_lso_ds = 0; p_lso_ds = 0
         m_glb_lso_ds = 0; n_glb_lso_ds = 0; p_glb_lso_ds = 0
+        lso_ds_lo = 0
         filter_sigma = dflt_real
         lso_n_passes_x = 0
         lso_n_passes_y = 0
@@ -1050,7 +1052,7 @@ contains
         call s_configure_coordinate_bounds(recon_type, weno_polyn, muscl_polyn, igr_order, buff_size, idwint, idwbuff, viscous, &
                                            & bubbles_lagrange, particles_lagrange, m, n, p, num_dims, igr, ib, fd_number)
         if (lso_filter) then
-            buff_size = max(buff_size, 4)
+            buff_size = max(buff_size, 4, lso_down_sample_factor - 1)  ! 9-point stencil; coarse samples read factor - 1 ghosts
             idwbuff(1:num_dims)%beg = -buff_size
             idwbuff(1:num_dims)%end = idwint(1:num_dims)%end + buff_size
         end if

@@ -201,6 +201,8 @@ class Case:
         if factor > 1 and str(p.get("lso_filter_wrt", "F")).upper() == "T":
             sigma1 = 8.0 * max(factor, 1.0) * max(d for d in (dx, dy, dz) if d > 0.0)
             if sigma > 1.05 * sigma1:
+                if str(p.get("stretch_x", "F")).upper() == "T":
+                    raise common.MFCException("LSO: filter_sigma needs the stage-2 coarse filter, which requires a uniform x grid; lower filter_sigma or lso_down_sample_factor.")
                 _, cdx, cdy, cdz = self.__get_grid_spacing(down_sample_factor=factor)
                 sigma2 = math.sqrt(sigma * sigma - sigma1 * sigma1)
                 self.__warn_lso_width(sigma1, dx, dy, dz)

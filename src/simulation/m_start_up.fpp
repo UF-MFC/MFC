@@ -900,23 +900,6 @@ contains
         call s_initialize_variables_conversion_module(enforce_density_floor=.true., preserve_qbmm_number=.true.)
         if (grid_geometry == 3) call s_initialize_fftw_module()
 
-        if (lso_filter_wrt .and. lso_down_sample_factor > 1) then
-            m_lso_ds = int((m + 1)/lso_down_sample_factor) - 1
-            m_glb_lso_ds = int((m_glb + 1)/lso_down_sample_factor) - 1
-            if (n > 0) then
-                n_lso_ds = int((n + 1)/lso_down_sample_factor) - 1
-                n_glb_lso_ds = int((n_glb + 1)/lso_down_sample_factor) - 1
-            else
-                n_lso_ds = 0; n_glb_lso_ds = 0
-            end if
-            if (p > 0) then
-                p_lso_ds = int((p + 1)/lso_down_sample_factor) - 1
-                p_glb_lso_ds = int((p_glb + 1)/lso_down_sample_factor) - 1
-            else
-                p_lso_ds = 0; p_glb_lso_ds = 0
-            end if
-        end if
-
         if (lso_filter_wrt .and. lso_stat_wrt) then
             lso_stat_phi_p_beg = 1; lso_stat_phi_p_end = 1
             lso_stat_rho_beg = 2; lso_stat_rho_end = 2
@@ -1053,6 +1036,30 @@ contains
     end subroutine s_initialize_modules
 
     !> Set up the MPI execution environment, bind GPUs, and decompose the computational domain
+    !> Coarse cell J belongs to the rank holding its first fine cell factor*J, so any rank layout tiles the coarse grid; a coarse
+    !! sample then reads at most factor - 1 fine ghost cells.
+    impure subroutine s_set_lso_coarse_extents
+
+        integer :: d, f, sidx(3), cells(3), ext(3), glb(3)
+
+        f = lso_down_sample_factor
+        sidx = 0
+        if (allocated(start_idx)) sidx(1:size(start_idx)) = start_idx
+        cells = [m, n, p] + 1
+        glb = [m_glb, n_glb, p_glb] + 1
+        ext = 0
+        do d = 1, num_dims
+            lso_ds_lo(d) = (sidx(d) + f - 1)/f
+            ext(d) = (sidx(d) + cells(d) - 1)/f - lso_ds_lo(d)
+            glb(d) = glb(d)/f
+        end do
+        m_lso_ds = ext(1); n_lso_ds = ext(2); p_lso_ds = ext(3)
+        m_glb_lso_ds = glb(1) - 1
+        n_glb_lso_ds = merge(glb(2) - 1, 0, num_dims > 1)
+        p_glb_lso_ds = merge(glb(3) - 1, 0, num_dims > 2)
+
+    end subroutine s_set_lso_coarse_extents
+
     impure subroutine s_initialize_mpi_domain
 
         integer :: ierr
@@ -1124,6 +1131,7 @@ contains
         call s_initialize_parallel_io()
 
         call s_mpi_decompose_computational_domain(write_silo_ghost_offsets=.false., adjust_local_domains=.false.)
+        if (lso_filter_wrt .and. lso_down_sample_factor > 1) call s_set_lso_coarse_extents()
         call s_check_lso_decomposition()
 
         bc = bc_xyz_info(bc_x, bc_y, bc_z)

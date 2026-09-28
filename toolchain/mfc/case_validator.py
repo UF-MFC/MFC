@@ -2115,7 +2115,6 @@ class CaseValidator:
         self.prohibit(sigma is None or sigma <= 0, "LSO filtering requires filter_sigma > 0")
         stretch_x = self.get("stretch_x", "F") == "T"
         self.prohibit(any(self.get(f"stretch_{d}", "F") == "T" for d in "yz"), "LSO filtering requires uniform y and z grids")
-        self.prohibit(stretch_x and factor > 1, "LSO filtering on a stretched x grid requires lso_down_sample_factor = 1")
         self.prohibit(stretch_x and pp_filter, "lso_pp_filter requires a uniform x grid")
         self.prohibit(factor < 1, "lso_down_sample_factor must be a positive integer")
         if factor > 1:

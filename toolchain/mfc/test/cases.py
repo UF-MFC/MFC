@@ -4322,7 +4322,9 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         cases.append(define_case_d(stack, "", {}))
         # Stretching widens x beyond [0, 1], so the patches are widened to cover it.
         stretch = {"stretch_x": "T", "a_x": 2.0, "x_a": 0.3, "x_b": 0.7, "loops_x": 1}
-        cases.append(define_case_d(stack, "Stretched x", {**stretch, **{f"patch_icpp({i})%length_x": 4 for i in (1, 2, 3)}}))
+        wide = {f"patch_icpp({i})%length_x": 4 for i in (1, 2, 3)}
+        cases.append(define_case_d(stack, "Stretched x", {**stretch, **wide}))
+        cases.append(define_case_d(stack, "Stretched x Downsampled", {**stretch, **wide, "lso_down_sample_factor": 2}))
         cases.append(
             define_case_d(
                 stack,

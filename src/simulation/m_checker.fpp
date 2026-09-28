@@ -19,18 +19,22 @@ module m_checker
 
 contains
 
-    !> Coarse file views require each rank to own whole, globally aligned stride blocks.
+    !> Coarse cells are owned globally (s_set_lso_coarse_extents); the toolchain checks global divisibility. The stage-2
+    !! coarse filter exchanges coarse halos between aligned blocks and keeps the per-rank rule.
     impure subroutine s_check_lso_decomposition()
 
         integer               :: i
-        integer, dimension(3) :: cells
+        integer, dimension(3) :: cells, ext
 
         if (.not. lso_filter_wrt .or. lso_down_sample_factor <= 1) return
         cells = [m + 1, n + 1, p + 1]
+        ext = [m_lso_ds, n_lso_ds, p_lso_ds]
         do i = 1, num_dims
-            ! lint: runtime-check local extents exist only after MPI decomposition; divisible extents also align rank starts
-            @:PROHIBIT(mod(cells(i), lso_down_sample_factor) /= 0, &
-                       & "LSO downsampling requires per-rank cells divisible by lso_down_sample_factor; change grid or rank count")
+            ! lint: runtime-check coarse extents exist only after MPI decomposition
+            @:PROHIBIT(ext(i) < 0, "LSO downsampling needs at least one coarse cell per rank; use fewer ranks")
+            ! lint: runtime-check local extents exist only after MPI decomposition
+            @:PROHIBIT(lso2_n_passes_x > 0 .and. mod(cells(i), lso_down_sample_factor) /= 0, &
+                       & "The LSO stage-2 coarse filter requires per-rank cells divisible by lso_down_sample_factor")
         end do
 
     end subroutine s_check_lso_decomposition

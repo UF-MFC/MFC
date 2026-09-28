@@ -868,16 +868,16 @@ contains
 
         sizes_glb(1) = m_glb_lso_ds + 1
         sizes_loc(1) = m_lso_ds + 1
-        start_lso(1) = start_idx(1)/lso_down_sample_factor
+        start_lso(1) = lso_ds_lo(1)
         if (num_dims >= 2) then
             sizes_glb(2) = n_glb_lso_ds + 1
             sizes_loc(2) = n_lso_ds + 1
-            start_lso(2) = start_idx(2)/lso_down_sample_factor
+            start_lso(2) = lso_ds_lo(2)
         end if
         if (num_dims == 3) then
             sizes_glb(3) = p_glb_lso_ds + 1
             sizes_loc(3) = p_lso_ds + 1
-            start_lso(3) = start_idx(3)/lso_down_sample_factor
+            start_lso(3) = lso_ds_lo(3)
         end if
 
         do i = 1, sys_size
