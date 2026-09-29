@@ -19,8 +19,8 @@ module m_checker
 
 contains
 
-    !> Coarse cells are owned globally (s_set_lso_coarse_extents); the toolchain checks global divisibility. The stage-2
-    !! coarse filter exchanges coarse halos between aligned blocks and keeps the per-rank rule.
+    !> Coarse cells are owned globally (s_set_lso_coarse_extents); the toolchain checks global divisibility. The stage-2 coarse
+    !! filter exchanges coarse halos between aligned blocks and keeps the per-rank rule.
     impure subroutine s_check_lso_decomposition()
 
         integer               :: i

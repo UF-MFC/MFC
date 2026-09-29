@@ -2064,12 +2064,12 @@ contains
 
         if (lso_down_sample_factor > 1) then
             m_loc = m_lso_ds; n_loc = n_lso_ds; p_loc = p_lso_ds
-            sizes_glb(1) = m_glb_lso_ds + 1; sizes_loc(1) = m_loc + 1; start_stat(1) = start_idx(1)/lso_down_sample_factor
+            sizes_glb(1) = m_glb_lso_ds + 1; sizes_loc(1) = m_loc + 1; start_stat(1) = lso_ds_lo(1)
             if (num_dims >= 2) then
-                sizes_glb(2) = n_glb_lso_ds + 1; sizes_loc(2) = n_loc + 1; start_stat(2) = start_idx(2)/lso_down_sample_factor
+                sizes_glb(2) = n_glb_lso_ds + 1; sizes_loc(2) = n_loc + 1; start_stat(2) = lso_ds_lo(2)
             end if
             if (num_dims == 3) then
-                sizes_glb(3) = p_glb_lso_ds + 1; sizes_loc(3) = p_loc + 1; start_stat(3) = start_idx(3)/lso_down_sample_factor
+                sizes_glb(3) = p_glb_lso_ds + 1; sizes_loc(3) = p_loc + 1; start_stat(3) = lso_ds_lo(3)
             end if
         else
             m_loc = m; n_loc = n; p_loc = p
