@@ -278,7 +278,6 @@ contains
         real(wp), dimension(-offset_x%beg:m + offset_x%end,-offset_y%beg:n + offset_y%end,-offset_z%beg:p + offset_z%end, &
              & 3) :: liutex_axis
         integer                         :: i, j, k, l, kx, ky, kz, kf, j_glb, k_glb, l_glb
-        logical                         :: is_fluid_cell
         character(50)                   :: filename
         logical                         :: file_exists
         real(wp), dimension(num_fluids) :: alpha_rho
@@ -652,18 +651,8 @@ contains
 
                         pres = q_prim_vf(eqn_idx%E)%sf(i, j, k)
 
-                        is_fluid_cell = .true.
-                        if (ib) is_fluid_cell = (ib_markers%sf(i, j, k) == 0)
-
-                        if (.not. is_fluid_cell) then
-                            ! Sound speed is undefined in immersed-solid cells; do not expose the ghost-state
-                            ! square-root NaN in post-processing output.
-                            c = 0._wp
-                        else
-                            call s_compute_speed_of_sound(pres, rho_sf(i, j, k), gamma_sf(i, j, k), pi_inf_sf(i, j, k), adv, c, &
-                                                          & alpha_rho)
-                            if (c /= c) c = 0._wp
-                        end if
+                        call s_compute_speed_of_sound(pres, rho_sf(i, j, k), gamma_sf(i, j, k), pi_inf_sf(i, j, k), adv, c, &
+                                                      & alpha_rho)
 
                         out%q_sf(i, j, k) = c
                     end do
@@ -1082,6 +1071,12 @@ contains
         end if
 
         call s_mpi_bcast_user_inputs()
+
+        ! Save original BCs before decomposition overwrites them with MPI neighbor ranks
+        ib_bc_x = bc_x
+        ib_bc_y = bc_y
+        ib_bc_z = bc_z
+
         num_dims = 1 + min(1, n) + min(1, p)
         if (lso_stat_wrt .and. (lso_pp_filter .or. lso_filter_wrt)) then
             block

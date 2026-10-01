@@ -595,8 +595,6 @@ contains
         lso_stat_q_beg = 0; lso_stat_q_end = 0
         lso_stat_rhotau_u_beg = 0; lso_stat_rhotau_u_end = 0
 
-        ! Bubble modeling
-        bubbles_euler = .false.
         bubble_model = 1
         polytropic = .true.
         thermal = dflt_int
@@ -767,7 +765,6 @@ contains
             particle_cloud(i)%moving_ibm = 0
             particle_cloud(i)%seed = 0
             particle_cloud(i)%cloud_geometry = 1
-            particle_cloud(i)%shell_axis = 3
             particle_cloud(i)%packing_method = dflt_int
             particle_cloud(i)%periodic = 0
         end do

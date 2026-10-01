@@ -145,7 +145,7 @@ PHYSICS_DOCS = {
     "check_model_eqns_and_num_fluids": {
         "title": "Model Equation Selection",
         "category": "Model Equations",
-        "explanation": "Model 1: gamma-law single-fluid. Model 2: five-equation (Allaire). Model 3: six-equation (Saurel).",
+        "explanation": ("Model 1: gamma-law single-fluid. Model 2: five-equation (Allaire). Model 3: six-equation (Saurel). Model 4: four-equation (single-component with bubbles)."),
         "references": ["Wilfong26", "Allaire02", "Saurel09"],
     },
     # Boundary Conditions
@@ -198,6 +198,15 @@ PHYSICS_DOCS = {
             ">0 adds an Arrhenius exp(-rburn%ta/T) factor and requires fluid_pp(1)%cv > 0."
         ),
     },
+    "_check_ignition_growth_burn": {
+        "title": "JWL Ignition and Growth Burn",
+        "category": "Combustion",
+        "explanation": (
+            "The ignition and growth model converts fluid 2 into fluid 3 using a bounded update. "
+            "It requires three fluids, JWL reactant and product phases, positive reference density, "
+            "and nonnegative rate coefficients and exponents."
+        ),
+    },
     "check_prog_burn": {
         "title": "JWL Program Burn",
         "category": "Combustion",
@@ -232,7 +241,7 @@ PHYSICS_DOCS = {
     "check_heat_conduction": {
         "title": "Fourier Heat Conduction",
         "category": "Numerical Schemes",
-        "math": r"k_i \\geq 0, \\quad k = \\sum_i \\alpha_i k_i",
+        "math": r"k_i \geq 0, \quad k = \sum_i \alpha_i k_i",
         "explanation": (
             "fluid_pp(i)%k_therm must be non-negative and, when positive, requires fluid_pp(i)%cv > 0 (the "
             "thermal-equilibrium mixture temperature is undefined without it). Only the stiffened-gas and "
@@ -1162,7 +1171,7 @@ class CaseValidator:
         )
         for i, prefix in state_dependent.items():
             el_temperature = self.get("particles_lagrange", "F") == "T" and (self.get(f"lag_params%suth({i})", 0) or 0) > 0
-            needs_temperature = self.get("T_wrt", "F") == "T" or (i == 1 and self._is_numeric(rta) and rta > 0) or dynamic_ib or el_temperature
+            needs_temperature = self.get("T_wrt", "F") == "T" or (i == 1 and self._is_numeric(rta) and rta > 0) or (dynamic_ib and prefix == "jwl") or el_temperature
             if needs_temperature:
                 cv = self.get(f"fluid_pp({i})%cv")
                 self.prohibit(cv is None or cv <= 0, f"the temperature of fluid {i} needs fluid_pp({i})%cv > 0")
@@ -1176,7 +1185,11 @@ class CaseValidator:
         self.prohibit(self.get("wave_speeds") == 2, f"a state-dependent eos ({state_dependent_names}) requires wave_speeds = 1 (the PVRS estimate is stiffened-gas only)")
         for j in range(1, (self.get("num_patches") or 0) + 1):
             self.prohibit(self.get(f"patch_icpp({j})%hcid") in (202, 203), f"patch_icpp({j})%hcid = 202/203 read fluid_pp(1)%gamma, which a state-dependent eos does not set")
-        for flag in ("bubbles_euler", "igr", "relativity", "mhd", "chemistry", "relax"):
+        has_jwl = any(prefix == "jwl" for prefix in state_dependent.values())
+        unsupported = ("bubbles_euler", "igr", "relativity", "mhd", "chemistry", "relax")
+        if not has_jwl:
+            unsupported += ("bubbles_lagrange", "ib")
+        for flag in unsupported:
             self.prohibit(self.get(flag, "F") == "T", f"a state-dependent eos ({state_dependent_names}) is not supported with {flag} = T")
 
     def check_stiffened_eos(self):
@@ -1509,41 +1522,54 @@ class CaseValidator:
         self.prohibit(weno_Re_flux and not viscous, "weno_Re_flux requires viscous to be enabled")
 
     def check_heat_conduction(self):
-        """Checks Fourier heat-conduction constraints."""
-        num_fluids = self.get("num_fluids") or 1
+        """Checks constraints on Fourier heat conduction parameters (fluid_pp(i)%k_therm)"""
+        num_fluids = self.get("num_fluids")
+        # If num_fluids is not set, check at least fluid 1 (for model_eqns=1)
+        if num_fluids is None:
+            num_fluids = 1
         model_eqns = self.get("model_eqns")
+        eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
+        supported_eos = {eos_names["stiffened_gas"], eos_names["ideal_gas"]}
+
+        # heat_conduction is derived (any fluid_pp(i)%k_therm > 0), not a case-file parameter --
+        # mirrors m_global_parameters_common.fpp: heat_conduction = any(fluid_pp(:)%k_therm > 0._wp).
+        heat_conduction = False
+        for i in range(1, num_fluids + 1):
+            k_therm = self.get(f"fluid_pp({i})%k_therm")
+            if k_therm is None:
+                continue
+            self.prohibit(k_therm < 0, f"fluid_pp({i})%k_therm must be non-negative")
+            if k_therm > 0:
+                heat_conduction = True
+                cv = self.get(f"fluid_pp({i})%cv")
+                self.prohibit(
+                    cv is None or cv <= 0,
+                    f"fluid_pp({i})%cv must be positive when fluid_pp({i})%k_therm is set: the mixture temperature is undefined without it",
+                )
+                eos = self.get(f"fluid_pp({i})%eos")
+                effective_eos = eos if eos is not None else eos_names["stiffened_gas"]
+                self.prohibit(effective_eos not in supported_eos, "heat conduction supports only the stiffened-gas and ideal-gas equations of state")
+                # model_eqns = 1 (gamma law) stores gamma/pi_inf, not a volume fraction, in the slots
+                # that m_conduction.fpp reads as alpha_i; only model_eqns = 2 (5-eq) and 3 (6-eq) carry one.
+                self.prohibit(
+                    model_eqns not in (2, 3),
+                    f"heat conduction requires model_eqns = 2 (5-equation) or model_eqns = 3 (6-equation): fluid_pp({i})%k_therm is weighted by a volume fraction that model_eqns = 1 does not carry",
+                )
+
         igr = self.get("igr", "F") == "T"
         chemistry = self.get("chemistry", "F") == "T"
-        eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
-        heat_conduction = False
-
-        for i in range(1, num_fluids + 1):
-            k_therm = self.get(f"fluid_pp({i})%k_therm", 0.0)
-            if not self._is_numeric(k_therm):
-                continue
-
-            self.prohibit(k_therm < 0.0, f"fluid_pp({i})%k_therm must be non-negative")
-            if k_therm <= 0.0:
-                continue
-
-            heat_conduction = True
-            cv = self.get(f"fluid_pp({i})%cv")
-            self.prohibit(
-                not self._is_numeric(cv) or cv <= 0.0,
-                f"fluid_pp({i})%cv must be positive when fluid_pp({i})%k_therm is set",
-            )
-            eos = self.get(f"fluid_pp({i})%eos", eos_names["stiffened_gas"])
-            self.prohibit(
-                eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]),
-                "heat conduction supports only the stiffened-gas and ideal-gas equations of state",
-            )
-
-        self.prohibit(
-            heat_conduction and model_eqns not in (2, 3),
-            "heat conduction requires model_eqns = 2 (5-equation) or model_eqns = 3 (6-equation)",
-        )
+        # Load-bearing, not cosmetic: q_T_sf%sf is allocated only inside "if (.not. igr)" in
+        # m_time_steppers.fpp but deallocated unconditionally, so heat_conduction + igr would
+        # deallocate an unallocated field.
         self.prohibit(heat_conduction and igr, "heat conduction is not supported with igr")
-        self.prohibit(heat_conduction and chemistry, "heat conduction is not supported with chemistry")
+        # Load-bearing, not cosmetic: with chemistry, m_rhs.fpp allocates the energy flux_src slot
+        # under chemistry and chem_params%diffusion and not viscous, which conduction also allocates
+        # when heat_conduction is on -- the combination double-allocates and aborts in the allocator.
+        # Chemistry also carries its own mixture-averaged conduction, so the physics would double-count.
+        self.prohibit(
+            heat_conduction and chemistry,
+            "heat conduction is not supported with chemistry: the reacting path already carries mixture-averaged conduction through chem_params%diffusion",
+        )
 
     def check_el_particles(self):
         """Check the Euler-Lagrange particle-model requirements."""
@@ -1955,6 +1981,19 @@ class CaseValidator:
             if grcbc_in:
                 # Check if EITHER beg OR end is set to -7
                 self.prohibit(bc_beg != -7 and bc_end != -7, f"Subsonic Inflow (grcbc_in) requires bc_{dir}%beg = -7 or bc_{dir}%end = -7")
+                # The relaxation drives the boundary towards a prescribed state, so that state has to be given in
+                # full. An unset component keeps its default sentinel and the boundary diverges over a few hundred
+                # steps rather than failing outright, which is a hard failure to read backwards from an ICFL abort.
+                num_fluids = self.get("num_fluids", 1)
+                # s_initialize_cbc_module copies vel_in(1..num_dims) and the kernel reads them through
+                # dir_idx, which is (2,1,3) for a y inflow and (3,1,2) for z -- so requiring only
+                # component 1 would leave the normal velocity of a y or z inflow unchecked.
+                num_dims = 3 if (self.get("p", 0) or 0) > 0 else (2 if (self.get("n", 0) or 0) > 0 else 1)
+                missing = [n for n in (f"bc_{dir}%pres_in",) if self.get(n) is None]
+                missing += [f"bc_{dir}%vel_in({d})" for d in range(1, num_dims + 1) if self.get(f"bc_{dir}%vel_in({d})") is None]
+                missing += [f"bc_{dir}%alpha_rho_in({i})" for i in range(1, num_fluids + 1) if self.get(f"bc_{dir}%alpha_rho_in({i})") is None]
+                missing += [f"bc_{dir}%alpha_in({i})" for i in range(1, num_fluids + 1) if self.get(f"bc_{dir}%alpha_in({i})") is None]
+                self.prohibit(len(missing) > 0, f"Subsonic Inflow (grcbc_in) needs the full inflow state; missing {', '.join(missing)}")
             if grcbc_out:
                 # Check if EITHER beg OR end is set to -8
                 self.prohibit(bc_beg != -8 and bc_end != -8, f"Subsonic Outflow (grcbc_out) requires bc_{dir}%beg = -8 or bc_{dir}%end = -8")
@@ -2053,6 +2092,8 @@ class CaseValidator:
         file_per_process = self.get("file_per_process", "F") == "T"
         m = self.get("m", 0)
         n = self.get("n", 0)
+
+        self.prohibit(file_per_process and not parallel_io, "file_per_process requires parallel_io = T")
 
         if down_sample:
             self.prohibit(not parallel_io, "down sample requires parallel_io = T")
@@ -2241,10 +2282,14 @@ class CaseValidator:
             "chem_params%reaction_substeps_max must be >= reaction_substeps when adap_substeps = T",
         )
 
+        # Isothermal walls need a heat-conduction path to evaluate the wall flux: either the reacting
+        # mixture-averaged one, or Fourier conduction via fluid_pp(i)%k_therm.
+        num_fluids_iso = self.get("num_fluids") or 1
+        conducts = any((self.get(f"fluid_pp({i})%k_therm") or 0) > 0 for i in range(1, num_fluids_iso + 1))
+        has_heat_path = (chemistry and diffusion) or conducts
+
         # Define what constitutes a wall (-15 for slip, -16 for no-slip)
         wall_bcs = [-15, -16]
-        fourier_conduction = any(self._is_numeric(self.get(f"fluid_pp({i})%k_therm", 0.0)) and self.get(f"fluid_pp({i})%k_therm", 0.0) > 0.0 for i in range(1, (self.get("num_fluids") or 1) + 1))
-        heat_path = fourier_conduction or (chemistry and diffusion)
 
         for dir in ["x", "y", "z"]:
             isothermal_in = self.get(f"bc_{dir}%isothermal_in", "F") == "T"
@@ -2253,9 +2298,11 @@ class CaseValidator:
             bc_end = self.get(f"bc_{dir}%end")
 
             if isothermal_in:
+                # Prohibit isothermal boundaries without a heat-conduction path to evaluate the wall flux
                 self.prohibit(
-                    not heat_path,
-                    f"Isothermal In (bc_{dir}%isothermal_in) requires a heat-conduction path: set fluid_pp(i)%k_therm > 0 or enable chemistry with chem_params%diffusion = T.",
+                    not has_heat_path,
+                    f"Isothermal In (bc_{dir}%isothermal_in) requires a heat-conduction path: either chemistry='T' with "
+                    "chem_params%diffusion='T', or Fourier conduction via fluid_pp(i)%k_therm > 0.",
                 )
 
                 # Prohibit if neither beg nor end is set to a valid wall condition
@@ -2268,9 +2315,11 @@ class CaseValidator:
                     self.prohibit(tw_in <= 0.0, f"Wall temperature bc_{dir}%Twall_in must be strictly positive for thermodynamics (got {tw_in}).")
 
             if isothermal_out:
+                # Prohibit isothermal boundaries without a heat-conduction path to evaluate the wall flux
                 self.prohibit(
-                    not heat_path,
-                    f"Isothermal Out (bc_{dir}%isothermal_out) requires a heat-conduction path: set fluid_pp(i)%k_therm > 0 or enable chemistry with chem_params%diffusion = T.",
+                    not has_heat_path,
+                    f"Isothermal Out (bc_{dir}%isothermal_out) requires a heat-conduction path: either chemistry='T' with "
+                    "chem_params%diffusion='T', or Fourier conduction via fluid_pp(i)%k_therm > 0.",
                 )
 
                 # Prohibit if neither beg nor end is set to a valid wall condition
@@ -2288,7 +2337,11 @@ class CaseValidator:
         if not reactive_burn:
             return
         burn_model = self.get("rburn%model", 0)
-        self.prohibit(burn_model not in (0, 1), "reactive_burn requires rburn%model = 0 (pressure law) or 1 (Ignition-and-Growth, I&G)")
+        self.prohibit(burn_model not in (0, 1), "reactive_burn requires rburn%model = 0 or 1")
+        if burn_model == 1:
+            self.prohibit(self.get("model_eqns") not in (2, 3), "reactive_burn requires model_eqns = 2 or 3")
+            self._check_ignition_growth_burn()
+            return
         # These mirror Fortran checks that compared against the dflt_real / dflt_int
         # sentinels, so an unset parameter was a violation there. A bare
         # "is not None" guard would silently pass the unset case instead.
@@ -2296,67 +2349,80 @@ class CaseValidator:
         # Supported on the 5-equation (pressure-equilibrium) and 6-equation multi-fluid models.
         self.prohibit(model_eqns not in (2, 3), "reactive_burn requires model_eqns = 2 or 3 (5- or 6-equation multi-fluid model) to be set")
 
-        rta = self.get("rburn%ta", 0.0)
-        if burn_model == 0:
-            self.prohibit(self.get("num_fluids") != 2, "pressure-law reactive_burn requires num_fluids = 2 (reactant then product)")
-            state_dependent_values = {f.value for f in EOS_FAMILIES if f.state_dependent}
-            state_dependent = any(self.get(f"fluid_pp({k})%eos") in state_dependent_values for k in (1, 2))
-            for prop in () if state_dependent else ("gamma", "pi_inf"):
-                v1 = self.get(f"fluid_pp(1)%{prop}")
-                v2 = self.get(f"fluid_pp(2)%{prop}")
-                self.prohibit(
-                    not self._is_numeric(v1) or not self._is_numeric(v2) or not math.isclose(v1, v2, rel_tol=1e-10),
-                    f"pressure-law reactive_burn requires matching fluid_pp(1)%{prop} and fluid_pp(2)%{prop}",
-                )
-            qv1 = self.get("fluid_pp(1)%qv", 0.0)
-            qv2 = self.get("fluid_pp(2)%qv", 0.0)
+        # Exactly two fluids (reactant = 1, product = 2) sharing the stiffened-gas EOS and
+        # differing only in qv; violating these silently corrupts the mass/energy balance.
+        self.prohibit(self.get("num_fluids") != 2, "reactive_burn requires num_fluids = 2 (reactant then product) to be set")
+        # A state-dependent family carries its own curve; the shared-EOS check is a stiffened-gas one.
+        state_dependent_values = {f.value for f in EOS_FAMILIES if f.state_dependent}
+        state_dependent = any(self.get(f"fluid_pp({k})%eos") in state_dependent_values for k in (1, 2))
+        for prop in () if state_dependent else ("gamma", "pi_inf"):
+            v1 = self.get(f"fluid_pp(1)%{prop}")
+            v2 = self.get(f"fluid_pp(2)%{prop}")
+            if not self._is_numeric(v1) or not self._is_numeric(v2):
+                # Unset defaults to dflt_real in the solver, so a missing value is
+                # either a negative EOS or a mismatch against the fluid that is set.
+                self.prohibit(True, f"reactive_burn requires both fluid_pp(1)%{prop} and fluid_pp(2)%{prop} to be set (reactant and product share the EOS)")
+                continue
             self.prohibit(
-                self._is_numeric(qv1) and self._is_numeric(qv2) and qv1 <= qv2,
-                "pressure-law reactive_burn requires fluid_pp(1)%qv > fluid_pp(2)%qv",
+                not math.isclose(v1, v2, rel_tol=1e-10),
+                f"reactive_burn requires fluid_pp(1)%{prop} == fluid_pp(2)%{prop} (reactant and product share the EOS)",
             )
-            # Pressure-law coefficients are only used by model 0.
-            rk = self.get("rburn%k")
-            self.prohibit(not self._is_numeric(rk) or rk <= 0, "pressure-law reactive_burn requires rburn%k > 0 (rate coefficient [1/s])")
-            self.prohibit(self.get("rburn%pign") is None, "pressure-law reactive_burn requires rburn%pign (ignition pressure threshold [Pa])")
-            rpref = self.get("rburn%pref")
-            self.prohibit(not self._is_numeric(rpref) or rpref <= 0, "pressure-law reactive_burn requires rburn%pref > 0")
-            rn = self.get("rburn%n")
-            self.prohibit(not self._is_numeric(rn) or rn < 0, "pressure-law reactive_burn requires rburn%n >= 0")
-            self.prohibit(self._is_numeric(rta) and rta < 0, "reactive_burn requires rburn%ta >= 0")
-        else:
-            self.prohibit(self.get("num_fluids") != 3, "Ignition-and-Growth reactive_burn requires num_fluids = 3 (air, reactant, product)")
-            eos_jwl = CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"]
-            for phase in (2, 3):
-                self.prohibit(self.get(f"fluid_pp({phase})%eos") != eos_jwl, f"Ignition-and-Growth reactive_burn requires JWL fluid {phase}")
-            for prop in ("jwl_a", "jwl_b", "jwl_r1", "jwl_r2", "jwl_omega", "jwl_rho0"):
-                v2 = self.get(f"fluid_pp(2)%{prop}")
-                v3 = self.get(f"fluid_pp(3)%{prop}")
-                self.prohibit(
-                    not self._is_numeric(v2) or not self._is_numeric(v3) or not math.isclose(v2, v3, rel_tol=1e-10),
-                    f"Ignition-and-Growth reactive_burn requires matching JWL {prop} for fluids 2 and 3",
-                )
-            for name in ("rho0", "q", "ki", "kg", "m1", "m2", "n1", "n2", "n3"):
-                value = self.get(f"rburn%{name}")
-                self.prohibit(not self._is_numeric(value) or not math.isfinite(value) or value < 0, f"Ignition-and-Growth reactive_burn requires finite rburn%{name} >= 0")
-            rho0 = self.get("rburn%rho0")
-            self.prohibit(not self._is_numeric(rho0) or rho0 <= 0, "Ignition-and-Growth reactive_burn requires rburn%rho0 > 0")
-            self.prohibit(not self._is_numeric(self.get("rburn%q")) or self.get("rburn%q") <= 0, "Ignition-and-Growth reactive_burn requires rburn%q > 0")
-            m2 = self.get("rburn%m2")
-            self.prohibit(not self._is_numeric(m2) or m2 % 2 != 0, "Ignition-and-Growth reactive_burn requires an even integer rburn%m2")
-            for name in ("m1", "n1"):
-                value = self.get(f"rburn%{name}")
-                self.prohibit(not self._is_numeric(value) or value < 1, f"Ignition-and-Growth reactive_burn requires rburn%{name} >= 1")
-            self.prohibit(self._is_numeric(rta) and rta > 0, "Ignition-and-Growth reactive_burn does not use rburn%ta")
+        # qv defaults to 0 in the Fortran, so an unset value is treated as 0 here to match.
+        qv1 = self.get("fluid_pp(1)%qv", 0.0)
+        qv2 = self.get("fluid_pp(2)%qv", 0.0)
+        self.prohibit(
+            self._is_numeric(qv1) and self._is_numeric(qv2) and qv1 <= qv2,
+            "reactive_burn requires fluid_pp(1)%qv > fluid_pp(2)%qv (reactant releases energy on conversion to product)",
+        )
+        # The rate uses rburn%k, %pign, %pref, %n directly; an unset value defaults to a negative
+        # sentinel in the solver and silently corrupts the burn, so require each to be set.
+        rk = self.get("rburn%k")
+        self.prohibit(not self._is_numeric(rk) or rk <= 0, "reactive_burn requires rburn%k > 0 (rate coefficient [1/s])")
+        self.prohibit(self.get("rburn%pign") is None, "reactive_burn requires rburn%pign to be set (ignition pressure threshold [Pa])")
+        rpref = self.get("rburn%pref")
+        self.prohibit(not self._is_numeric(rpref) or rpref <= 0, "reactive_burn requires rburn%pref > 0 (it normalizes the pressure drive and is used as a divisor)")
+        rn = self.get("rburn%n")
+        self.prohibit(not self._is_numeric(rn) or rn < 0, "reactive_burn requires rburn%n >= 0 (pressure-drive exponent)")
+        rta = self.get("rburn%ta")
+        self.prohibit(self._is_numeric(rta) and rta < 0, "reactive_burn requires rburn%ta >= 0 (activation temperature [K]; 0 disables the Arrhenius factor)")
         rsub = self.get("rburn%substeps")
         self.prohibit(
             self._is_numeric(rsub) and rsub < 0,
-            "reactive_burn requires rburn%substeps >= 0 (0 selects one bounded burn update per flow step)",
+            "reactive_burn requires rburn%substeps >= 0 (operator-split sub-steps per time step; 0 adds the source to the flow RHS)",
         )
         cv1 = self.get("fluid_pp(1)%cv")
         self.prohibit(
             self._is_numeric(rta) and rta > 0 and (not self._is_numeric(cv1) or cv1 <= 0),
             "reactive_burn with rburn%ta > 0 requires fluid_pp(1)%cv > 0 (the reactant temperature needs a physical heat capacity; cv = 0 silently disables the Arrhenius factor)",
         )
+
+    def _check_ignition_growth_burn(self):
+        rta = self.get("rburn%ta", 0.0)
+        self.prohibit(self.get("num_fluids") != 3, "Ignition-and-Growth reactive_burn requires num_fluids = 3 (air, reactant, product)")
+        eos_jwl = CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"]
+        for phase in (2, 3):
+            self.prohibit(self.get(f"fluid_pp({phase})%eos") != eos_jwl, f"Ignition-and-Growth reactive_burn requires JWL fluid {phase}")
+        for prop in ("jwl_a", "jwl_b", "jwl_r1", "jwl_r2", "jwl_omega", "jwl_rho0"):
+            v2 = self.get(f"fluid_pp(2)%{prop}")
+            v3 = self.get(f"fluid_pp(3)%{prop}")
+            self.prohibit(
+                not self._is_numeric(v2) or not self._is_numeric(v3) or not math.isclose(v2, v3, rel_tol=1e-10),
+                f"Ignition-and-Growth reactive_burn requires matching JWL {prop} for fluids 2 and 3",
+            )
+        for name in ("rho0", "q", "ki", "kg", "m1", "m2", "n1", "n2", "n3"):
+            value = self.get(f"rburn%{name}")
+            self.prohibit(not self._is_numeric(value) or not math.isfinite(value) or value < 0, f"Ignition-and-Growth reactive_burn requires finite rburn%{name} >= 0")
+        rho0 = self.get("rburn%rho0")
+        self.prohibit(not self._is_numeric(rho0) or rho0 <= 0, "Ignition-and-Growth reactive_burn requires rburn%rho0 > 0")
+        self.prohibit(not self._is_numeric(self.get("rburn%q")) or self.get("rburn%q") <= 0, "Ignition-and-Growth reactive_burn requires rburn%q > 0")
+        m2 = self.get("rburn%m2")
+        self.prohibit(not self._is_numeric(m2) or m2 % 2 != 0, "Ignition-and-Growth reactive_burn requires an even integer rburn%m2")
+        for name in ("m1", "n1"):
+            value = self.get(f"rburn%{name}")
+            self.prohibit(not self._is_numeric(value) or value < 1, f"Ignition-and-Growth reactive_burn requires rburn%{name} >= 1")
+        self.prohibit(self._is_numeric(rta) and rta > 0, "Ignition-and-Growth reactive_burn does not use rburn%ta")
+        rsub = self.get("rburn%substeps")
+        self.prohibit(self._is_numeric(rsub) and rsub < 0, "reactive_burn requires rburn%substeps >= 0")
 
     def check_prog_burn(self):
         if self.get("prog_burn", "F") != "T":
@@ -3127,7 +3193,6 @@ class CaseValidator:
         self.check_eos_parameter_sanity()
         self.check_surface_tension()
         self.check_mhd()
-        self.check_heat_conduction()
         self.check_el_particles()
         self.check_chemistry()
         self.check_reactive_burn()
@@ -3149,6 +3214,7 @@ class CaseValidator:
         self.check_body_forces()
         self.check_synthetic_turbulence()
         self.check_viscosity()
+        self.check_heat_conduction()
         self.check_non_newtonian()
         self.check_mhd_simulation()
         self.check_igr_simulation()

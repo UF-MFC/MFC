@@ -329,13 +329,13 @@ class TestChemistrySubstepping(ConstraintTestCase):
 
 class TestReactiveBurnFluidPairing(ConstraintTestCase):
     def test_rejects_wrong_num_fluids(self):
-        self.assertRejects({**REACTIVE_BURN, "num_fluids": 3}, "pressure-law reactive_burn requires num_fluids = 2")
+        self.assertRejects({**REACTIVE_BURN, "num_fluids": 3}, "reactive_burn requires num_fluids = 2")
 
     def test_rejects_gamma_mismatch(self):
-        self.assertRejects({**REACTIVE_BURN, "fluid_pp(2)%gamma": 0.5}, "matching fluid_pp(1)%gamma and fluid_pp(2)%gamma")
+        self.assertRejects({**REACTIVE_BURN, "fluid_pp(2)%gamma": 0.5}, "fluid_pp(1)%gamma == fluid_pp(2)%gamma")
 
     def test_rejects_pi_inf_mismatch(self):
-        self.assertRejects({**REACTIVE_BURN, "fluid_pp(2)%pi_inf": 1.0e5}, "matching fluid_pp(1)%pi_inf and fluid_pp(2)%pi_inf")
+        self.assertRejects({**REACTIVE_BURN, "fluid_pp(2)%pi_inf": 1.0e5}, "fluid_pp(1)%pi_inf == fluid_pp(2)%pi_inf")
 
     def test_rejects_equal_qv(self):
         self.assertRejects({**REACTIVE_BURN, "fluid_pp(1)%qv": 0.0}, "fluid_pp(1)%qv > fluid_pp(2)%qv")
@@ -354,11 +354,11 @@ class TestReactiveBurnFluidPairing(ConstraintTestCase):
         against the sentinel; an `is not None` guard would silently pass it."""
         for prop in ("gamma", "pi_inf"):
             params = {k: v for k, v in REACTIVE_BURN.items() if k != f"fluid_pp(2)%{prop}"}
-            self.assertRejects(params, f"matching fluid_pp(1)%{prop} and fluid_pp(2)%{prop}")
+            self.assertRejects(params, f"both fluid_pp(1)%{prop} and fluid_pp(2)%{prop} to be set")
 
     def test_rejects_unset_num_fluids(self):
         params = {k: v for k, v in REACTIVE_BURN.items() if k != "num_fluids"}
-        self.assertRejects(params, "pressure-law reactive_burn requires num_fluids = 2")
+        self.assertRejects(params, "reactive_burn requires num_fluids = 2")
 
     def test_rejects_unset_model_eqns(self):
         params = {k: v for k, v in REACTIVE_BURN.items() if k != "model_eqns"}
@@ -590,7 +590,7 @@ class TestMieGruneisenSelector(ConstraintTestCase):
     def test_dynamic_ibm_needs_complete_temperature_eos(self):
         ib = {
             **BASE_2D,
-            **self.MG,
+            **TestJwlSelector.JWL,
             "ib": "T",
             "num_ibs": 1,
             "fd_order": 2,
@@ -602,8 +602,8 @@ class TestMieGruneisenSelector(ConstraintTestCase):
             "patch_ib(1)%mass": 1.0,
         }
         self.assertRejects(ib, "temperature of fluid 1 needs fluid_pp(1)%cv > 0")
-        self.assertRejects({**ib, "fluid_pp(1)%cv": 400.0}, "needs fluid_pp(1)%mg_t0 > 0")
-        self.assertAccepts({**ib, "fluid_pp(1)%cv": 400.0, "fluid_pp(1)%mg_t0": 300.0})
+        self.assertRejects({**ib, "fluid_pp(1)%cv": 400.0}, "needs fluid_pp(1)%jwl_t0 > 0")
+        self.assertAccepts({**ib, "fluid_pp(1)%cv": 400.0, "fluid_pp(1)%jwl_t0": 300.0})
 
     def test_zero_density_is_singular(self):
         self.assertRejects({**BASE, **self.MG, "patch_icpp(1)%alpha_rho(1)": 0.0, "patch_icpp(1)%alpha(1)": 1.0}, "outside its equation of state")

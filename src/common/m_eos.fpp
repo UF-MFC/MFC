@@ -41,8 +41,7 @@ module m_eos
         & s_compute_speed_of_sound_avg, s_initialize_eos_module, s_finalize_eos_module, f_pressure, f_bulk_modulus, &
         & f_relativistic_enthalpy, f_isentrope_exponent, f_isentrope_pressure, f_sg_thermal, f_mixture_temperature, &
         & f_is_state_dependent, s_phase_coefficients, s_phase_pressure_on_isentrope, s_phase_temperature, &
-        & s_phase_density_at_temperature, s_phase_density_on_isentrope, s_phase_internal_energy, s_phase_bulk_modulus, eoss, &
-        & isentrope_B
+        & s_phase_density_at_temperature, s_phase_density_on_isentrope, s_phase_internal_energy, s_phase_bulk_modulus
 
 contains
 

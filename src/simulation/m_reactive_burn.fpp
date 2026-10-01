@@ -5,50 +5,190 @@
 #:include 'macros.fpp'
 #:include 'case.fpp'
 
-!> @brief Bounded pressure burn and ignition-and-growth source for the multi-fluid model. I&G uses air (fluid 1), unreacted
-!! explosive (fluid 2), and products (fluid 3). The last two share an EOS; their combined partial density and volume fraction
-!! represent one material.
+!> @brief Condensed-phase reactive burn: a pressure-driven programmed-burn source that converts a "reactant" fluid into a "product"
+!! fluid on the multi-fluid model (num_fluids=2, chemistry='F'). The two fluids share the same stiffened-gas EOS (gamma, pi_inf) and
+!! differ only in their reference energy qv, so the reactant->product conversion releases (qv_reactant - qv_product) per unit mass
+!! through the mixture EOS with no explicit energy source. Because the two fluids are mechanically identical the volume-fraction
+!! swap is exact (the product volume fraction is the reaction progress), making this a reactive-Euler/ZND detonation model expressed
+!! through the diffuse-interface framework. A shock raises the pressure above rburn%pign, the reactant burns, and the energy release
+!! sustains the shock -- a self-propagating condensed-phase detonation.
 module m_reactive_burn
 
     use m_global_parameters
     use m_variables_conversion, only: s_compute_mixture_coefficients
-    use m_eos, only: s_phase_temperature, s_phase_internal_energy, f_pressure
-    use m_constants, only: eos_jwl
     use m_ibm, only: ib_markers
     use m_mpi_proxy, only: s_mpi_abort
+    use m_constants, only: eos_jwl
+    use m_eos, only: s_phase_temperature, s_phase_internal_energy, f_pressure
 
     implicit none
 
-    private; public :: s_reactive_burn_substep, s_program_burn_step
+    private; public :: s_compute_reactive_burn, s_reactive_burn_substep, s_program_burn_step
 
 contains
 
-    !> Pressure-law burn frequency, with an optional reactant-temperature factor.
-    subroutine s_burn_frequency(pres, alpha_rho_react, alpha_react, frequency)
+    !> Programmed-burn rate dlambda/dt for one cell state. Both the RHS source and the operator-split integrator call this, so the
+    !! rate law is stated once.
+    !! @param pres             Mixture pressure
+    !! @param lambda           Reaction progress, i.e. the product volume fraction
+    !! @param alpha_rho_react  Reactant partial density, for the optional Arrhenius factor
+    !! @param alpha_react      Reactant volume fraction, for the optional Arrhenius factor
+    !! @param rate             dlambda/dt; zero below the ignition pressure and once the reactant is spent
+    subroutine s_burn_rate(pres, lambda, alpha_rho_react, alpha_react, rate)
 
-        $:GPU_ROUTINE(function_name='s_burn_frequency', parallelism='[seq]', cray_inline=True)
+        $:GPU_ROUTINE(function_name='s_burn_rate', parallelism='[seq]', cray_inline=True)
 
-        real(wp), intent(in)  :: pres, alpha_rho_react, alpha_react
-        real(wp), intent(out) :: frequency
+        real(wp), intent(in)  :: pres, lambda, alpha_rho_react, alpha_react
+        real(wp), intent(out) :: rate
         real(wp)              :: drive, T_r
 
-        ! Pressure-driven burn fires only behind the shock (p > rburn%pign).
+        ! Pressure-driven programmed burn: fires only behind the shock (p > rburn%pign).
         drive = (pres - rburn%pign)/rburn%pref
-        if (drive > 0._wp .and. alpha_react > 0._wp .and. alpha_rho_react > 0._wp) then
-            frequency = rburn%k*drive**rburn%n
+        if (drive > 0._wp .and. lambda < 1._wp) then
+            rate = rburn%k*(1._wp - lambda)*drive**rburn%n
             ! Optional Arrhenius dependence on the reactant's phasic temperature, from the reactant's own
             ! EOS. rburn%ta = 0, the default, leaves the pure pressure-driven rate unchanged.
             if (rburn%ta > 0._wp) then
                 call s_phase_temperature(alpha_rho_react/max(alpha_react, sgm_eps), pres, 1, T_r)
-                frequency = frequency*exp(-rburn%ta/T_r)
+                rate = rate*exp(-rburn%ta/T_r)
             end if
         else
-            frequency = 0._wp
+            rate = 0._wp
         end if
 
-    end subroutine s_burn_frequency
+    end subroutine s_burn_rate
 
-    !> I&G rate based on Garno's formulation. Since dY_R/dt = -(RI + RG), this is a mass-fraction rate, not a frequency.
+    !> Add the programmed-burn reaction source to the continuity and volume-fraction RHS.
+    !! @param rhs_vf     Right-hand-side accumulator (inout)
+    !! @param q_cons_vf  Conserved variables (partial densities live here)
+    !! @param q_prim_vf  Primitive variables (pressure and volume fractions live here)
+    !! @param bounds     Interior cell bounds
+    subroutine s_compute_reactive_burn(rhs_vf, q_cons_vf, q_prim_vf, bounds)
+
+        type(scalar_field), dimension(sys_size), intent(inout) :: rhs_vf
+        type(scalar_field), dimension(sys_size), intent(in)    :: q_cons_vf, q_prim_vf
+        type(int_bounds_info), dimension(1:3), intent(in)      :: bounds
+        integer                                                :: x, y, z
+        real(wp)                                               :: rho, pres, lambda, rate, mdot
+        real(wp)                                               :: alpha_rho_react, alpha_react
+
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[rho, pres, lambda, rate, mdot, alpha_rho_react, alpha_react]', copyin='[bounds]')
+        do z = bounds(3)%beg, bounds(3)%end
+            do y = bounds(2)%beg, bounds(2)%end
+                do x = bounds(1)%beg, bounds(1)%end
+                    ! reactant is fluid 1, product is fluid 2
+                    rho = q_cons_vf(eqn_idx%cont%beg)%sf(x, y, z) + q_cons_vf(eqn_idx%cont%beg + 1)%sf(x, y, z)
+                    pres = q_prim_vf(eqn_idx%E)%sf(x, y, z)
+                    lambda = q_prim_vf(eqn_idx%adv%beg + 1)%sf(x, y, z)  ! reaction progress = product volume fraction
+
+                    alpha_rho_react = q_cons_vf(eqn_idx%cont%beg)%sf(x, y, z)
+                    alpha_react = q_prim_vf(eqn_idx%adv%beg)%sf(x, y, z)
+                    call s_burn_rate(pres, lambda, alpha_rho_react, alpha_react, rate)
+                    if (rate > 0._wp) then
+                        mdot = rho*rate  ! mass reactant -> product
+
+                        ! continuity: reactant loses mass, product gains it
+                        rhs_vf(eqn_idx%cont%beg)%sf(x, y, z) = rhs_vf(eqn_idx%cont%beg)%sf(x, y, z) - mdot
+                        rhs_vf(eqn_idx%cont%beg + 1)%sf(x, y, z) = rhs_vf(eqn_idx%cont%beg + 1)%sf(x, y, z) + mdot
+
+                        ! volume fraction: exact swap (fluids share the EOS), so d(alpha)/dt = +/- rate
+                        rhs_vf(eqn_idx%adv%beg)%sf(x, y, z) = rhs_vf(eqn_idx%adv%beg)%sf(x, y, z) - rate
+                        rhs_vf(eqn_idx%adv%beg + 1)%sf(x, y, z) = rhs_vf(eqn_idx%adv%beg + 1)%sf(x, y, z) + rate
+                    end if
+                end do
+            end do
+        end do
+        $:END_GPU_PARALLEL_LOOP()
+
+    end subroutine s_compute_reactive_burn
+
+    !> Operator-split alternative to s_compute_reactive_burn, used when rburn%substeps > 0. The flow is frozen and the burn ODE is
+    !! integrated over one time step in equal sub-steps, so the reaction time scale is decoupled from the acoustic CFL. The mixture
+    !! pressure is re-evaluated from the frozen internal energy each sub-step, which is what carries the rate's own feedback: the
+    !! coefficients move as the reactant becomes product.
+    !! @param q_cons_vf  Conserved variables, updated in place
+    !! @param dtime      Time step to integrate across
+    !! @param bounds     Interior cell bounds
+    subroutine s_reactive_burn_substep(q_cons_vf, dtime, bounds)
+
+        type(scalar_field), dimension(sys_size), intent(inout) :: q_cons_vf
+        real(wp), intent(in)                                   :: dtime
+        type(int_bounds_info), dimension(1:3), intent(in)      :: bounds
+        integer                                                :: x, y, z, i, sub
+        real(wp)                                               :: rho, pres, lambda, rate
+        real(wp)                                               :: dt_sub, e_int, gamma_mix, pi_inf_mix, qv_mix
+        real(wp)                                               :: rho_mix, dlambda, dmass
+        real(wp)                                               :: alpha_rho_react, alpha_react
+
+        ! Bounded by num_fluids_max, not num_fluids: under case optimization num_fluids is a compile-time
+        ! constant that can be 1, and the reactant/product indices below are literal. The validator holds
+        ! reactive_burn to two fluids, so only the first two entries are ever used.
+        real(wp), dimension(num_fluids_max) :: alpha_rho, alpha
+
+        if (rburn%model == 1) then
+            call s_ignition_growth_substep(q_cons_vf, dtime, bounds)
+            return
+        end if
+
+        dt_sub = dtime/real(rburn%substeps, wp)
+
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[alpha_rho, alpha, rho, pres, lambda, rate, e_int, gamma_mix, pi_inf_mix, &
+                            & qv_mix, rho_mix, dlambda, dmass, alpha_rho_react, alpha_react, i, sub]', copyin='[bounds, dt_sub]')
+        do z = bounds(3)%beg, bounds(3)%end
+            do y = bounds(2)%beg, bounds(2)%end
+                do x = bounds(1)%beg, bounds(1)%end
+                    $:GPU_LOOP(parallelism='[seq]')
+                    do i = 1, num_fluids
+                        alpha_rho(i) = q_cons_vf(i + eqn_idx%cont%beg - 1)%sf(x, y, z)
+                        alpha(i) = q_cons_vf(i + eqn_idx%adv%beg - 1)%sf(x, y, z)
+                    end do
+                    rho = alpha_rho(1) + alpha_rho(2)
+
+                    ! Internal energy per unit volume is what the burn conserves: it moves mass and volume
+                    ! between the phases, and the qv difference surfaces as pressure through the mixture EOS.
+                    e_int = q_cons_vf(eqn_idx%E)%sf(x, y, z)
+                    $:GPU_LOOP(parallelism='[seq]')
+                    do i = eqn_idx%mom%beg, eqn_idx%mom%end
+                        e_int = e_int - 0.5_wp*q_cons_vf(i)%sf(x, y, z)**2/rho
+                    end do
+
+                    $:GPU_LOOP(parallelism='[seq]')
+                    do sub = 1, rburn%substeps
+                        lambda = alpha(2)
+                        call s_compute_mixture_coefficients(alpha_rho, alpha, rho_mix, gamma_mix, pi_inf_mix, qv_mix)
+                        pres = f_pressure(e_int, gamma_mix, pi_inf_mix, qv_mix)
+                        alpha_rho_react = alpha_rho(1)
+                        alpha_react = alpha(1)
+                        call s_burn_rate(pres, lambda, alpha_rho_react, alpha_react, rate)
+                        if (rate <= 0._wp) exit
+                        ! A sub-step longer than the reaction time would carry the progress variable past one.
+                        ! Stop it there and hand over the reactant's remaining mass in the same sub-step: capping
+                        ! the two independently strands mass at zero volume, and the EOS divides one by the other.
+                        if (rate*dt_sub >= 1._wp - lambda) then
+                            dlambda = 1._wp - lambda
+                            dmass = alpha_rho(1)
+                        else
+                            dlambda = rate*dt_sub
+                            dmass = min(rho*dlambda, alpha_rho(1))
+                        end if
+                        alpha(1) = alpha(1) - dlambda
+                        alpha(2) = alpha(2) + dlambda
+                        alpha_rho(1) = alpha_rho(1) - dmass
+                        alpha_rho(2) = alpha_rho(2) + dmass
+                    end do
+
+                    $:GPU_LOOP(parallelism='[seq]')
+                    do i = 1, num_fluids
+                        q_cons_vf(i + eqn_idx%cont%beg - 1)%sf(x, y, z) = alpha_rho(i)
+                        q_cons_vf(i + eqn_idx%adv%beg - 1)%sf(x, y, z) = alpha(i)
+                    end do
+                end do
+            end do
+        end do
+        $:END_GPU_PARALLEL_LOOP()
+
+    end subroutine s_reactive_burn_substep
+
     subroutine s_ignition_growth_rate(rho, alpha_rho_react, rate)
 
         $:GPU_ROUTINE(function_name='s_ignition_growth_rate', parallelism='[seq]', cray_inline=True)
@@ -66,7 +206,6 @@ contains
 
     end subroutine s_ignition_growth_rate
 
-    !> Bounded update; the common I&G exponents reduce to an exactly solvable logistic equation.
     subroutine s_ignition_growth_survival(rho, alpha_rho_react, dtime, survival)
 
         $:GPU_ROUTINE(function_name='s_ignition_growth_survival', parallelism='[seq]', cray_inline=True)
@@ -100,20 +239,16 @@ contains
 
     end subroutine s_ignition_growth_survival
 
-    !> Integrate the local burn with a bounded source update.
-    !! @param q_cons_vf  Conserved variables, updated in place
-    !! @param dtime      Time step to integrate across
-    !! @param bounds     Interior cell bounds
-    subroutine s_reactive_burn_substep(q_cons_vf, dtime, bounds)
+    subroutine s_ignition_growth_substep(q_cons_vf, dtime, bounds)
 
         type(scalar_field), dimension(sys_size), intent(inout) :: q_cons_vf
         real(wp), intent(in)                                   :: dtime
         type(int_bounds_info), dimension(1:3), intent(in)      :: bounds
         integer                                                :: x, y, z, i, sub, nsub
-        real(wp)                                               :: rho, pres, frequency, survival, denergy
+        real(wp)                                               :: rho, pres, survival, denergy
         real(wp)                                               :: dt_sub, e_int, gamma_mix, pi_inf_mix, qv_mix
         real(wp)                                               :: rho_mix, dlambda, dmass, e_phase
-        real(wp)                                               :: alpha_rho_react, alpha_react, alpha_phase, alpha_rho_phase
+        real(wp)                                               :: alpha_phase, alpha_rho_phase
 
         ! num_fluids_max also covers the literal product index 3 under case optimization.
         real(wp), dimension(num_fluids_max) :: alpha_rho, alpha
@@ -121,9 +256,9 @@ contains
         nsub = max(1, rburn%substeps)
         dt_sub = dtime/real(nsub, wp)
 
-        $:GPU_PARALLEL_LOOP(collapse=3, private='[alpha_rho, alpha, rho, pres, frequency, survival, denergy, e_int, gamma_mix, &
-                            & pi_inf_mix, qv_mix, rho_mix, dlambda, dmass, e_phase, alpha_rho_react, alpha_react, alpha_phase, &
-                            & alpha_rho_phase, i, sub]', copyin='[bounds, dt_sub, nsub]')
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[alpha_rho, alpha, rho, pres, survival, denergy, e_int, gamma_mix, pi_inf_mix, &
+                            & qv_mix, rho_mix, dlambda, dmass, e_phase, alpha_phase, alpha_rho_phase, i, sub]', copyin='[bounds, &
+                            & dt_sub, nsub]')
         do z = bounds(3)%beg, bounds(3)%end
             do y = bounds(2)%beg, bounds(2)%end
                 do x = bounds(1)%beg, bounds(1)%end
@@ -132,11 +267,10 @@ contains
                         alpha_rho(i) = q_cons_vf(i + eqn_idx%cont%beg - 1)%sf(x, y, z)
                         alpha(i) = q_cons_vf(i + eqn_idx%adv%beg - 1)%sf(x, y, z)
                     end do
-                    rho = alpha_rho(1) + alpha_rho(2)
-                    if (rburn%model == 1) rho = rho + alpha_rho(3)
+                    rho = alpha_rho(1) + alpha_rho(2) + alpha_rho(3)
                     if (rho <= sgm_eps) cycle
 
-                    if (rburn%model == 0 .or. model_eqns == model_eqns_6eq) then
+                    if (model_eqns == model_eqns_6eq) then
                         e_int = q_cons_vf(eqn_idx%E)%sf(x, y, z)
                         $:GPU_LOOP(parallelism='[seq]')
                         do i = eqn_idx%mom%beg, eqn_idx%mom%end
@@ -146,33 +280,17 @@ contains
 
                     $:GPU_LOOP(parallelism='[seq]')
                     do sub = 1, nsub
-                        if (rburn%model == 0) then
-                            call s_compute_mixture_coefficients(alpha_rho, alpha, rho_mix, gamma_mix, pi_inf_mix, qv_mix)
-                            pres = f_pressure(e_int, gamma_mix, pi_inf_mix, qv_mix)
-                            alpha_rho_react = alpha_rho(1)
-                            alpha_react = alpha(1)
-                            call s_burn_frequency(pres, alpha_rho_react, alpha_react, frequency)
-                            if (frequency <= 0._wp) exit
-                            survival = exp(-frequency*dt_sub)
-                            dlambda = alpha(1)*(1._wp - survival)
-                            dmass = alpha_rho(1)*(1._wp - survival)
-                            alpha(1) = alpha(1)*survival
-                            alpha(2) = alpha(2) + dlambda
-                            alpha_rho(1) = alpha_rho(1)*survival
-                            alpha_rho(2) = alpha_rho(2) + dmass
-                        else
-                            call s_ignition_growth_survival(rho, alpha_rho(2), dt_sub, survival)
-                            if (survival >= 1._wp) exit
-                            dlambda = alpha(2)*(1._wp - survival)
-                            dmass = alpha_rho(2)*(1._wp - survival)
-                            alpha(2) = alpha(2)*survival
-                            alpha(3) = alpha(3) + dlambda
-                            alpha_rho(2) = alpha_rho(2)*survival
-                            alpha_rho(3) = alpha_rho(3) + dmass
-                            denergy = rburn%q*dmass
-                            q_cons_vf(eqn_idx%E)%sf(x, y, z) = q_cons_vf(eqn_idx%E)%sf(x, y, z) + denergy
-                            if (model_eqns == model_eqns_6eq) e_int = e_int + denergy
-                        end if
+                        call s_ignition_growth_survival(rho, alpha_rho(2), dt_sub, survival)
+                        if (survival >= 1._wp) exit
+                        dlambda = alpha(2)*(1._wp - survival)
+                        dmass = alpha_rho(2)*(1._wp - survival)
+                        alpha(2) = alpha(2)*survival
+                        alpha(3) = alpha(3) + dlambda
+                        alpha_rho(2) = alpha_rho(2)*survival
+                        alpha_rho(3) = alpha_rho(3) + dmass
+                        denergy = rburn%q*dmass
+                        q_cons_vf(eqn_idx%E)%sf(x, y, z) = q_cons_vf(eqn_idx%E)%sf(x, y, z) + denergy
+                        if (model_eqns == model_eqns_6eq) e_int = e_int + denergy
                     end do
 
                     $:GPU_LOOP(parallelism='[seq]')
@@ -196,9 +314,8 @@ contains
         end do
         $:END_GPU_PARALLEL_LOOP()
 
-    end subroutine s_reactive_burn_substep
+    end subroutine s_ignition_growth_substep
 
-    !> Deposit the energy swept by the prescribed front during this flow step.
     subroutine s_program_burn_step(q_cons_vf, t_begin, dtime)
 
         type(scalar_field), dimension(sys_size), intent(inout) :: q_cons_vf

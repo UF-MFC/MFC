@@ -48,7 +48,7 @@ module m_lso_filter
     use m_global_parameters
     use m_mpi_common
     use m_constants
-    use m_eos, only: s_phase_temperature, eoss, isentrope_B
+    use m_eos, only: s_phase_temperature
     use m_variables_conversion, only: s_convert_conservative_to_primitive_variables
     use m_ibm, only: ib_markers
     use m_nvtx

@@ -588,7 +588,7 @@ module m_derived_types
         real(wp) :: ki, kg      !< Ignition and growth coefficients
         real(wp) :: m1, m2      !< Ignition exponents
         real(wp) :: n1, n2, n3  !< Growth exponents
-        integer  :: substeps    !< Operator-split sub-steps per time step (0 = one bounded update)
+        integer  :: substeps    !< Operator-split sub-steps (0 = flow RHS for model 0; one bounded update for model 1)
     end type reactive_burn_parameters
 
     !> Coefficients of one fluid's equation of state, resolved once at init. Held as a record per fluid rather than as parallel

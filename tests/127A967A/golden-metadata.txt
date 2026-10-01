@@ -191,3 +191,4 @@ CPU:
     Vulnerability Tsa:                       Not affected
     Vulnerability Tsx async abort:           Not affected
     Vulnerability Vmscape:                   Mitigation; IBPB before exit to userspace
+

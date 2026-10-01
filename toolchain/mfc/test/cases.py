@@ -844,7 +844,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             alter_low_Mach_correction()
             if num_fluids == 1:
                 alter_eos()
-            alter_ib(dimInfo, num_fluids=num_fluids)
+            alter_ib(dimInfo)
             if len(dimInfo[0]) > 1:
                 alter_igr()
 
@@ -869,7 +869,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             if num_fluids == 1:
                 stack.push("Viscous", {"fluid_pp(1)%Re(1)": 0.0001, "dt": 1e-11, "patch_icpp(1)%vel(1)": 1.0, "viscous": "T"})
 
-                alter_ib(dimInfo, num_fluids=num_fluids, six_eqn_model=True, viscous=True)
+                alter_ib(dimInfo, six_eqn_model=True, viscous=True)
 
                 if len(dimInfo[0]) > 1:
                     alter_igr()
@@ -937,7 +937,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                     {"fluid_pp(1)%Re(1)": 0.001, "fluid_pp(1)%Re(2)": 0.001, "fluid_pp(2)%Re(1)": 0.001, "fluid_pp(2)%Re(2)": 0.001, "dt": 1e-11, "patch_icpp(1)%vel(1)": 1.0, "viscous": "T"},
                 )
 
-                alter_ib(dimInfo, num_fluids=num_fluids, six_eqn_model=True, viscous=True)
+                alter_ib(dimInfo, six_eqn_model=True, viscous=True)
 
                 if len(dimInfo[0]) > 1:
                     alter_igr()
@@ -1194,7 +1194,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             if ARG("rdma_mpi"):
                 cases.append(define_case_d(stack, "2 MPI Ranks -> RDMA MPI", {"rdma_mpi": "T"}, ppn=2))
 
-    def alter_ib(dimInfo, num_fluids, six_eqn_model=False, viscous=False):
+    def alter_ib(dimInfo, six_eqn_model=False, viscous=False):
         for slip in [True, False]:
             stack.push(
                 "IBM",
@@ -1329,6 +1329,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             )
 
         if len(dimInfo[0]) == 2 and not viscous:
+            num_fluids = next((mod["num_fluids"] for mod in reversed(stack.mods) if "num_fluids" in mod), 1)
             if num_fluids == 1:
                 # Dynamic IBM pressure correction reconstructs a same-temperature ghost density. JWL exercises the
                 # state-dependent branch; the Mie-Gruneisen and Vinet reference curves have separate golden tests.
@@ -2422,22 +2423,6 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                     # survived. Restricted to one configuration to add a single golden.
                     if len(dimInfo[0]) == 2 and couplingMethod == 1 and adap_dt == "F":
                         stack.push("qv_nonzero", {"fluid_pp(1)%qv": 0.01})
-                        cases.append(define_case_d(stack, "", {}))
-                        stack.pop()
-                        stack.push(
-                            "eos=mie_gruneisen",
-                            {
-                                "fluid_pp(1)%eos": "mie_gruneisen",
-                                "fluid_pp(1)%gamma": None,
-                                "fluid_pp(1)%pi_inf": None,
-                                "fluid_pp(1)%cv": 1.0,
-                                "fluid_pp(1)%mg_rho0": 24.0,
-                                "fluid_pp(1)%mg_c0": 1000.0,
-                                "fluid_pp(1)%mg_s": 1.5,
-                                "fluid_pp(1)%mg_gruneisen": 2.0,
-                                "fluid_pp(1)%mg_t0": 300.0,
-                            },
-                        )
                         cases.append(define_case_d(stack, "", {}))
                         stack.pop()
 
@@ -3850,9 +3835,11 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         cases.append(define_case_d(stack, "", {}))
         cases.append(define_case_d(stack, "eos=mie_gruneisen -> jwl", mg_to_jwl))
         stack.pop()
-        # More than one burn update resolves pressure feedback within a flow step. Run on 2 ranks
-        # because substeps is the one integer among the rburn members: a broadcast emitted with
-        # the real kind leaves rank 1 using a garbage count.
+        # Operator-split burn (rburn%substeps > 0): the source is integrated per cell after the flow
+        # update rather than entering the flow RHS, so the reaction time scale is decoupled from the
+        # acoustic CFL. Nothing else reaches s_reactive_burn_substep. Run on 2 ranks because substeps
+        # is the one integer among the rburn members: a broadcast emitted with the real kind leaves
+        # rank 1 sub-stepping a garbage count, which a single-rank golden cannot see.
         stack.push("substeps", {"rburn%substeps": 10})
         cases.append(define_case_d(stack, "", {}, ppn=2))
         stack.pop()
