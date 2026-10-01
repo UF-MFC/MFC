@@ -86,7 +86,7 @@ case = {
     "particle_pp%cor_col": 0.7,
     "lso_filter": "T",
     "lso_filter_wrt": "T",
-    "lso_stat_wrt": "T",
+    "lso_stat_wrt": "F",
     "filter_sigma": D / 4.0,
     "lso_R_gas": 287.05,
     "lso_mu": 1.84e-5,
