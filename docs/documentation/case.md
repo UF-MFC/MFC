@@ -517,6 +517,7 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 | `jwl_G`          | Real    | JWL++ reactive-burn rate constant.                                 |
 | `jwl_b_exp`      | Real    | JWL++ reactive-burn pressure exponent.                             |
 | `prog_burn`      | Logical | Enable kinematic JWL program burn.                                 |
+| `fluid_pp(i)%%jwl_Q` | Real | Program burn energy per unit mass of JWL fluid `i`.             |
 | `pb_D_cj`        | Real    | Programmed burn Chapman-Jouguet detonation velocity.               |
 | `pb_width`       | Real    | Programmed burn reaction zone width.                               |
 | `pb_x_det`       | Real    | Programmed burn detonation point x-coordinate.                     |
@@ -524,7 +525,9 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 | `pb_z_det`       | Real    | Programmed burn detonation point z-coordinate.                     |
 | `pb_t_det`       | Real    | Programmed burn detonation initiation time.                        |
 
-`jwl_afterburn`, `jwl_reactive`, and `prog_burn` are independent burn models that may be combined; `jwl_afterburn` and `jwl_reactive` each add their own progress equation to the conservative state.
+With `prog_burn`, a front travels from (`pb_x_det`, `pb_y_det`, `pb_z_det`) at speed `pb_D_cj` after `pb_t_det`. Each cell receives the swept fraction of `fluid_pp(JWL)%%jwl_Q` over a distance `pb_width`. The energy increment is based on the front positions at the start and end of a full flow step, so a front crossing more than one zone width in a step still deposits the prescribed energy. Progress is tied to fixed cell coordinates; use this prescribed-front model when material motion through the reaction zone is small. Use exactly one JWL fluid with positive `jwl_Q`, `pb_D_cj`, and `pb_width`. `prog_burn` cannot be combined with `jwl_reactive` or `reactive_burn`.
+
+`jwl_reactive` is a separate JWL++ control. Its source term is not wired into the solver on this branch; the bounded pressure burn below applies to `reactive_burn`.
 
 ### 6. Simulation Algorithm {#sec-simulation-algorithm}
 
@@ -784,7 +787,7 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `lso_down_sample_factor`| Integer | Stride factor for coarsening the filtered output grid (1 = no coarsening). Must divide each active global and per-rank cell count. Reduced-grid post-processing requires shared parallel I/O; see @ref lso-filter-testing for supported layouts. |
 | `lso_stat_wrt`          | Logical | Write 11 filtered product blocks (11/21/33 scalar components in 1D/2D/3D). Requires `num_fluids=1`, `lso_filter_wrt=T`, `parallel_io=T` and `particles_lagrange=F`; particle products use IBM markers. |
 | `lso_R_gas`             | Real    | Specific gas constant [J/(kg·K)] for temperature reconstruction used in stat fields. Default 287.0 (dry air). |
-| `filter_sigma`          | Real    | Target Gaussian filter standard deviation in physical units |
+| `filter_sigma`          | Real    | Target Gaussian filter standard deviation in physical units. On a stretched x grid (`stretch_x=T`; y and z uniform, no `lso_pp_filter` or stage-2 coarse filter) simulation replaces the x weights with ceil((σ/(1.2 Δx_min))²) passes of per-cell weights whose zeroth, first and second physical moments are exact. |
 | `lso_n_passes_x`        | Integer | Number of filter passes in x (auto-computed by toolchain from `filter_sigma` and grid spacing) |
 | `lso_n_passes_y`        | Integer | Number of filter passes in y (auto-computed) |
 | `lso_n_passes_z`        | Integer | Number of filter passes in z (auto-computed) |
@@ -1221,11 +1224,20 @@ Note: For relativistic flow, the conservative and primitive densities are differ
 | `cont_damage_s`   | Real    | Power `s` for continuum damage model                |
 | `alpha_bar`       | Real    | Damage factor (rate) for continuum damage model     |
 | `reactive_burn`   | Logical | Enable condensed-phase reactive burn                |
+| `rburn%%model`     | Integer | Burn law: 0 pressure law, 1 Ignition-and-Growth (I&G) |
 | `rburn%%k`         | Real    | Reactive-burn rate coefficient [1/s]                |
 | `rburn%%pign`      | Real    | Reactive-burn ignition pressure threshold [Pa]      |
 | `rburn%%pref`      | Real    | Reactive-burn reference pressure for the drive [Pa] |
 | `rburn%%n`         | Real    | Reactive-burn pressure-drive exponent               |
 | `rburn%%ta`        | Real    | Reactive-burn activation temperature [K] (0 = off)  |
+| `rburn%%substeps`  | Integer | Burn updates per flow step (0 = one update)          |
+| `rburn%%rho0`      | Real    | Reference reactant density [kg/m³]                   |
+| `rburn%%q`         | Real    | Reaction energy per unit reacted mass [J/kg]         |
+| `rburn%%ki`, `rburn%%kg` | Real | Ignition and growth coefficients                    |
+| `rburn%%m1`, `rburn%%m2` | Real | Ignition exponents                                   |
+| `rburn%%n1`, `rburn%%n2`, `rburn%%n3` | Real | Growth exponents                         |
+
+`reactive_burn` supports two rate laws. Model 0 uses two fluids, transferring reactant mass and volume to products at fixed total energy. Model 1 is the Ignition-and-Growth (I&G) model, using three fluids: air (1), unreacted explosive (2), and products (3). Fluids 2 and 3 must share the same JWL coefficients. Their combined mass and volume are conserved by the reaction, while fluid 2 mass divided by total density is the reactant mass fraction `Y_R` in Garno's formulation. Set `rburn%%q` to the energy release `Q`; the source adds `Q` times the reacted mass to total energy. The JWL energy offset `Y_R Δe` is represented by `fluid_pp(2)%%qv - fluid_pp(3)%%qv = -Δe`. The standard exponents `m1 = n1 = n2 = 1` use an exact bounded local update; other exponents use a bounded second-order update. `rburn%%substeps` resolves rate feedback within a flow step. Model 1 uses MFC's pressure-equilibrium closure for cells mixing air and explosive; the paper's interface closure differs. The paper's explosive-specific rate coefficients require calibration and are not supplied as defaults.
 
 - `cont_damage` activates continuum damage model for solid materials. Requires `tau_star`, `cont_damage_s`, and `alpha_bar` to be set (empirically determined) (\cite Cao19).
 

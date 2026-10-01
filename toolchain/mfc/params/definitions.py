@@ -1032,7 +1032,10 @@ def _load():
 
     # Condensed-phase reactive burn (programmed pressure burn on the multi-fluid model)
     _r("reactive_burn", LOG, {"reactive_burn"})
+    _r("rburn%model", INT, {"reactive_burn"})
     for a in ["k", "pign", "pref", "n", "ta"]:
+        _r(f"rburn%{a}", REAL, {"reactive_burn"})
+    for a in ["rho0", "q", "ki", "kg", "m1", "m2", "n1", "n2", "n3"]:
         _r(f"rburn%{a}", REAL, {"reactive_burn"})
     _r("rburn%substeps", INT, {"reactive_burn"})
 
@@ -1331,6 +1334,7 @@ def _load():
                 continue
             for suffix, sym in fam.required + fam.optional:
                 _r(f"{px}{fam.prefix}_{suffix}", REAL, math=sym)
+        _r(f"{px}jwl_Q", REAL, math=r"\f$Q_k\f$")
         _r(f"{px}G", REAL, {"hypoelasticity"}, math=r"\f$G_k\f$")
         _r(f"{px}Re(1)", REAL, {"viscosity"}, math=r"\f$\mathrm{Re}_k\f$ (shear)")
         _r(f"{px}Re(2)", REAL, {"viscosity"}, math=r"\f$\mathrm{Re}_k\f$ (bulk)")

@@ -75,6 +75,30 @@ REACTIVE_BURN = {
     "patch_icpp(1)%alpha(2)": 0.0,
 }
 
+IGNITION_GROWTH_BURN = {
+    **REACTIVE_BURN,
+    "num_fluids": 3,
+    "rburn%model": 1,
+    "rburn%rho0": 1900.0,
+    "rburn%q": 4.0e6,
+    "rburn%ki": 1.0e9,
+    "rburn%kg": 1.0e8,
+    "rburn%m1": 1.0,
+    "rburn%m2": 4.0,
+    "rburn%n1": 1.0,
+    "rburn%n2": 1.0,
+    "rburn%n3": 2.0,
+    "fluid_pp(2)%eos": 4,
+    "fluid_pp(2)%gamma": None,
+    "fluid_pp(2)%pi_inf": None,
+    "fluid_pp(2)%qv": 1.0e6,
+    "fluid_pp(3)%eos": 4,
+    "fluid_pp(3)%qv": 0.0,
+    "patch_icpp(1)%alpha_rho(3)": 0.0,
+    "patch_icpp(1)%alpha(3)": 0.0,
+    **{f"fluid_pp({phase})%{name}": value for phase in (2, 3) for name, value in {"jwl_a": 3.0e10, "jwl_b": 2.0e9, "jwl_r1": 4.15, "jwl_r2": 0.95, "jwl_omega": 0.3, "jwl_rho0": 1900.0}.items()},
+}
+
 CHEMISTRY = {**BASE, "chemistry": "T", "cantera_file": "h2o2.yaml"}
 
 # Two-fluid variants, which alt_soundspeed requires (the Kapila K coefficient is a
@@ -157,6 +181,34 @@ class TestImmersedBoundaryFlags(ConstraintTestCase):
         self.assertAccepts(BASE)
 
 
+class TestProgramBurnConstraints(unittest.TestCase):
+    def errors_for(self, **changes):
+        params = {
+            "prog_burn": "T",
+            "num_fluids": 1,
+            "fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"],
+            "fluid_pp(1)%jwl_Q": 1.0,
+            "pb_D_cj": 1.0,
+            "pb_width": 0.1,
+            "pb_t_det": 0.0,
+        }
+        params.update(changes)
+        validator = CaseValidator(params)
+        validator.check_prog_burn()
+        return " ".join(validator.errors)
+
+    def test_valid_front(self):
+        self.assertEqual(self.errors_for(), "")
+
+    def test_requires_positive_energy_and_width(self):
+        self.assertIn("jwl_Q", self.errors_for(**{"fluid_pp(1)%jwl_Q": 0.0}))
+        self.assertIn("pb_width", self.errors_for(pb_width=0.0))
+
+    def test_requires_jwl_and_unique_source(self):
+        self.assertIn("exactly one JWL", self.errors_for(**{"fluid_pp(1)%eos": 1}))
+        self.assertIn("cannot be combined", self.errors_for(jwl_reactive="T"))
+
+
 class TestLsoFilterConstraints(unittest.TestCase):
     BASE = {
         "lso_filter": "T",
@@ -209,6 +261,14 @@ class TestLsoFilterConstraints(unittest.TestCase):
         params = {**self.BASE, "ib": "T", "lso_pp_filter": "T", "parallel_io": "F"}
         self.assertTrue(any("IBM LSO post-process filtering requires parallel_io" in error for error in self.errors(params, "post_process")))
         self.assertEqual(self.errors({**params, "parallel_io": "T"}, "post_process"), [])
+
+    def test_stretched_x_allows_decimation_but_not_post_filter(self):
+        stretched = {**self.BASE, "stretch_x": "T"}
+        for stage in ("simulation", "post_process"):
+            self.assertEqual(self.errors(stretched, stage), [])
+            self.assertEqual(self.errors({**stretched, "m": 31, "lso_down_sample_factor": 4}, stage), [])
+            self.assertTrue(any("uniform y and z" in e for e in self.errors({**self.BASE, "stretch_y": "T"}, stage)))
+        self.assertTrue(any("uniform x" in e for e in self.errors({**stretched, "lso_pp_filter": "T"}, "post_process")))
 
     def test_filter_design_fails_when_tolerance_is_unreachable(self):
         with self.assertRaisesRegex(ValueError, "did not reach"):
@@ -269,13 +329,13 @@ class TestChemistrySubstepping(ConstraintTestCase):
 
 class TestReactiveBurnFluidPairing(ConstraintTestCase):
     def test_rejects_wrong_num_fluids(self):
-        self.assertRejects({**REACTIVE_BURN, "num_fluids": 3}, "reactive_burn requires num_fluids = 2")
+        self.assertRejects({**REACTIVE_BURN, "num_fluids": 3}, "pressure-law reactive_burn requires num_fluids = 2")
 
     def test_rejects_gamma_mismatch(self):
-        self.assertRejects({**REACTIVE_BURN, "fluid_pp(2)%gamma": 0.5}, "fluid_pp(1)%gamma == fluid_pp(2)%gamma")
+        self.assertRejects({**REACTIVE_BURN, "fluid_pp(2)%gamma": 0.5}, "matching fluid_pp(1)%gamma and fluid_pp(2)%gamma")
 
     def test_rejects_pi_inf_mismatch(self):
-        self.assertRejects({**REACTIVE_BURN, "fluid_pp(2)%pi_inf": 1.0e5}, "fluid_pp(1)%pi_inf == fluid_pp(2)%pi_inf")
+        self.assertRejects({**REACTIVE_BURN, "fluid_pp(2)%pi_inf": 1.0e5}, "matching fluid_pp(1)%pi_inf and fluid_pp(2)%pi_inf")
 
     def test_rejects_equal_qv(self):
         self.assertRejects({**REACTIVE_BURN, "fluid_pp(1)%qv": 0.0}, "fluid_pp(1)%qv > fluid_pp(2)%qv")
@@ -294,11 +354,11 @@ class TestReactiveBurnFluidPairing(ConstraintTestCase):
         against the sentinel; an `is not None` guard would silently pass it."""
         for prop in ("gamma", "pi_inf"):
             params = {k: v for k, v in REACTIVE_BURN.items() if k != f"fluid_pp(2)%{prop}"}
-            self.assertRejects(params, f"both fluid_pp(1)%{prop} and fluid_pp(2)%{prop} to be set")
+            self.assertRejects(params, f"matching fluid_pp(1)%{prop} and fluid_pp(2)%{prop}")
 
     def test_rejects_unset_num_fluids(self):
         params = {k: v for k, v in REACTIVE_BURN.items() if k != "num_fluids"}
-        self.assertRejects(params, "reactive_burn requires num_fluids = 2")
+        self.assertRejects(params, "pressure-law reactive_burn requires num_fluids = 2")
 
     def test_rejects_unset_model_eqns(self):
         params = {k: v for k, v in REACTIVE_BURN.items() if k != "model_eqns"}
@@ -306,6 +366,26 @@ class TestReactiveBurnFluidPairing(ConstraintTestCase):
 
     def test_accepts_valid_configuration(self):
         self.assertAccepts(REACTIVE_BURN)
+
+    def test_accepts_ignition_growth(self):
+        self.assertAccepts(IGNITION_GROWTH_BURN)
+
+    def test_rejects_ignition_growth_without_required_density(self):
+        params = {k: v for k, v in IGNITION_GROWTH_BURN.items() if k != "rburn%rho0"}
+        self.assertRejects(params, "Ignition-and-Growth reactive_burn requires rburn%rho0 > 0")
+
+    def test_rejects_ignition_growth_wrong_material_count(self):
+        self.assertRejects({**IGNITION_GROWTH_BURN, "num_fluids": 2}, "Ignition-and-Growth reactive_burn requires num_fluids = 3")
+
+    def test_rejects_ignition_growth_mismatched_jwl(self):
+        self.assertRejects({**IGNITION_GROWTH_BURN, "fluid_pp(3)%jwl_a": 2.0e10}, "matching JWL jwl_a")
+
+    def test_rejects_ignition_growth_odd_ignition_exponent(self):
+        self.assertRejects({**IGNITION_GROWTH_BURN, "rburn%m2": 3.0}, "even integer rburn%m2")
+
+    def test_rejects_ignition_growth_missing_heat_release(self):
+        params = {k: v for k, v in IGNITION_GROWTH_BURN.items() if k != "rburn%q"}
+        self.assertRejects(params, "Ignition-and-Growth reactive_burn requires rburn%q > 0")
 
 
 class TestPhaseChangeFluidPairing(ConstraintTestCase):

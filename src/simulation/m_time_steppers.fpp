@@ -12,7 +12,7 @@ module m_time_steppers
     use m_global_parameters
     use m_rhs
     use m_chemistry
-    use m_reactive_burn, only: s_reactive_burn_substep
+    use m_reactive_burn, only: s_reactive_burn_substep, s_program_burn_step
     use m_pressure_relaxation
     use m_hypoelastic, only: s_enforce_cont_damage_bounds
     use m_data_output
@@ -599,12 +599,21 @@ contains
             call nvtxEndRange
         end if
 
-        ! Operator-split condensed-phase burn: integrate the progress variable per cell after the flow
-        ! update, with sub-stepping, instead of adding the source to the flow RHS (rburn%substeps > 0).
-        if (reactive_burn .and. rburn%substeps > 0) then
+        ! Integrate the burn after the flow update. Zero substeps selects one bounded update.
+        if (reactive_burn) then
             call nvtxStartRange("BURN-SUBSTEP")
             call s_reactive_burn_substep(q_cons_ts(1)%vf, dt, idwint)
+            if (model_eqns == model_eqns_6eq .and. (.not. relax)) then
+                call s_pressure_relaxation_procedure(q_cons_ts(1)%vf)
+            end if
             call nvtxEndRange
+        end if
+
+        if (prog_burn) then
+            call s_program_burn_step(q_cons_ts(1)%vf, mytime, dt)
+            if (model_eqns == model_eqns_6eq .and. (.not. relax)) then
+                call s_pressure_relaxation_procedure(q_cons_ts(1)%vf)
+            end if
         end if
 
         if (ib) then

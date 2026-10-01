@@ -24,7 +24,8 @@ _EXPECTED_LABELS = {1: "stiffened-gas", 2: "ideal-gas", 3: "Mie-Gruneisen", 4: "
 _EXPECTED_CHOICES = [1, 2, 3, 4, 5]
 
 # Captured from `sorted(n for n in REGISTRY.all_params if n.startswith("fluid_pp(1)%"))`
-# on the unmodified tree (HEAD 949a131c), before eos_families.py existed.
+# on the unmodified tree (HEAD 949a131c), before eos_families.py existed,
+# plus jwl_Q for the programmed-burn energy budget.
 _EXPECTED_FLUID_PP1_PARAMS = [
     "fluid_pp(1)%G",
     "fluid_pp(1)%K",
@@ -34,6 +35,7 @@ _EXPECTED_FLUID_PP1_PARAMS = [
     "fluid_pp(1)%eos",
     "fluid_pp(1)%gamma",
     "fluid_pp(1)%hb_m",
+    "fluid_pp(1)%jwl_Q",
     "fluid_pp(1)%jwl_a",
     "fluid_pp(1)%jwl_b",
     "fluid_pp(1)%jwl_omega",

@@ -322,7 +322,8 @@ contains
         integer                           :: nd, nt, i, c, j, k, l, a, b, work_buff_size
         integer                           :: ti(6), tj(6)
         integer                           :: i_rsg, i_qt, i_eku, i_wtu, i_rmu, i_rlam, i_tt, i_uf
-        real(wp)                          :: Cv, gcv, rho_b, F_E, wloc, dsp(3), stiffness
+        real(wp)                          :: Cv, gcv, rho_b, F_E, wloc, dsp(3), stiffness, dx2
+        logical                           :: x_nonuni
         real(wp)                          :: rhou(3), tdotru(3), dudx(3, 3), dT(3), div_u, tau_res, tb(3, 3)
 
         nd = num_dims
@@ -366,6 +367,7 @@ contains
         ! Quasi-uniform output-grid spacing (mean; exact for integer decimation).
         dsp = 1._wp
         dsp(1) = (x_cc(m) - x_cc(0))/real(max(m, 1), wp)
+        x_nonuni = maxval(dx(0:m)) - minval(dx(0:m)) > 1.e-6_wp*minval(dx(0:m))  ! stretched x: local centred spacing
         if (n > 0) dsp(2) = (y_cc(n) - y_cc(0))/real(n, wp)
         if (p > 0) dsp(3) = (z_cc(p) - z_cc(0))/real(p, wp)
 
@@ -388,14 +390,16 @@ contains
 
                     ! gradients of the Favre fields (centred; ghosts filled above)
                     dudx = 0._wp; dT = 0._wp
+                    dx2 = 2._wp*dsp(1)
+                    if (x_nonuni) dx2 = x_cc(j + 1) - x_cc(j - 1)
                     do a = 1, nd
-                        dudx(a, 1) = (real(uT_vf(a)%sf(j + 1, k, l), wp) - real(uT_vf(a)%sf(j - 1, k, l), wp))/(2._wp*dsp(1))
+                        dudx(a, 1) = (real(uT_vf(a)%sf(j + 1, k, l), wp) - real(uT_vf(a)%sf(j - 1, k, l), wp))/dx2
                         if (n > 0) dudx(a, 2) = (real(uT_vf(a)%sf(j, k + 1, l), wp) - real(uT_vf(a)%sf(j, k - 1, l), &
                             & wp))/(2._wp*dsp(2))
                         if (p > 0) dudx(a, 3) = (real(uT_vf(a)%sf(j, k, l + 1), wp) - real(uT_vf(a)%sf(j, k, l - 1), &
                             & wp))/(2._wp*dsp(3))
                     end do
-                    dT(1) = (real(uT_vf(nd + 1)%sf(j + 1, k, l), wp) - real(uT_vf(nd + 1)%sf(j - 1, k, l), wp))/(2._wp*dsp(1))
+                    dT(1) = (real(uT_vf(nd + 1)%sf(j + 1, k, l), wp) - real(uT_vf(nd + 1)%sf(j - 1, k, l), wp))/dx2
                     if (n > 0) dT(2) = (real(uT_vf(nd + 1)%sf(j, k + 1, l), wp) - real(uT_vf(nd + 1)%sf(j, k - 1, l), &
                         & wp))/(2._wp*dsp(2))
                     if (p > 0) dT(3) = (real(uT_vf(nd + 1)%sf(j, k, l + 1), wp) - real(uT_vf(nd + 1)%sf(j, k, l - 1), &

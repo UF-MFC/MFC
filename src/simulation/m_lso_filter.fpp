@@ -4,6 +4,38 @@
 
 #:include 'macros.fpp'
 
+#! Stretched-x LSO filter: lso_n_passes_xp passes of the per-cell weights lso_wx over fields FLD(1:NV).
+#:def LSO_X_PHYS_PASSES(FLD, NV, REFRESH)
+    do ipass = 1, lso_n_passes_xp
+        do i = 1, ${NV}$
+            $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, sx, qs]')
+            do l = 0, p
+                do k = 0, n
+                    do j = 0, m
+                        qs = 0._wp
+                        $:GPU_LOOP(parallelism='[seq]')
+                        do sx = -4, 4
+                            qs = qs + lso_wx(sx, j)*real(${FLD}$(i)%sf(j + sx, k, l), wp)
+                        end do
+                        lso_tmp(j, k, l) = qs
+                    end do
+                end do
+            end do
+            $:END_GPU_PARALLEL_LOOP()
+            $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+            do l = 0, p
+                do k = 0, n
+                    do j = 0, m
+                        ${FLD}$(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)
+                    end do
+                end do
+            end do
+            $:END_GPU_PARALLEL_LOOP()
+        end do
+        if (ipass < lso_n_passes_xp) call ${REFRESH}$
+    end do
+#:enddef
+
 !> @brief LSO variable-weight Gaussian filter for conserved variables at save steps.
 !!
 !! 9-point symmetric FIR stencil
@@ -35,6 +67,14 @@ module m_lso_filter
     ! Scratch buffer for one directional pass (interior only).
     real(wp), allocatable, dimension(:,:,:) :: lso_tmp
     $:GPU_DECLARE(create='[lso_tmp]')
+
+    ! Stretched x: the designed weights assume uniform spacing, so x instead takes lso_n_passes_xp passes of per-cell 9-point
+    ! Gaussian quadrature weights whose physical moments are exact: sum 1, mean 0, variance filter_sigma**2/lso_n_passes_xp.
+    real(wp), parameter :: lso_xp_sigma_cells = 1.2_wp  !< per-pass sigma in finest cells; keeps the +-4 stencil at 3.3 sigma
+    logical :: lso_x_ready = .false., lso_x_phys = .false.
+    integer :: lso_n_passes_xp = 0
+    real(wp), allocatable, dimension(:,:) :: lso_wx
+    $:GPU_DECLARE(create='[lso_wx]')
 
     ! Filtered copy of the conserved variables (lso_filter_wrt = T).
     type(scalar_field), allocatable :: q_filt_vf(:)
@@ -165,11 +205,52 @@ contains
 
     end subroutine s_initialize_lso_filter_module
 
+    !> Detect a stretched x grid and build lso_wx. Called on first use: the grid ghosts are filled after module setup.
+    impure subroutine s_lso_setup_x_weights()
+
+        integer  :: j, s
+        real(wp) :: dx_lo, dx_hi, sig_p, var_p, a, b, r1, r2, cm, cp
+        real(wp) :: d(-4:4), w(-4:4)
+
+        lso_x_ready = .true.
+        dx_lo = minval(dx(0:m)); dx_hi = maxval(dx(0:m))
+#ifdef MFC_MPI
+        call s_mpi_allreduce_min(minval(dx(0:m)), dx_lo)
+        call s_mpi_allreduce_max(maxval(dx(0:m)), dx_hi)
+#endif
+        lso_x_phys = dx_hi - dx_lo > 1.e-6_wp*dx_lo
+        if (.not. lso_x_phys) return
+        if (lso2_n_passes_x > 0) call s_mpi_abort("LSO: the stage-2 coarse filter requires a uniform x grid")
+
+        lso_n_passes_xp = max(1, ceiling((filter_sigma/(lso_xp_sigma_cells*dx_lo))**2))
+        var_p = filter_sigma**2/real(lso_n_passes_xp, wp)
+        sig_p = sqrt(var_p)
+        @:ALLOCATE(lso_wx(-4:4, 0:m))
+        do j = 0, m
+            d = x_cc(j - 4:j + 4) - x_cc(j)
+            w = exp(-0.5_wp*(d/sig_p)**2)*dx(j - 4:j + 4)
+            w = w/sum(w)
+            ! Restore the exact mean and variance on the three central points (the missing variance where sig_p < dx).
+            a = -d(-1); b = d(1)
+            r1 = -sum(w*d); r2 = var_p - sum(w*d*d)
+            cm = (r2 - r1*b)/(a*(a + b)); cp = (r2 + r1*a)/(b*(a + b))
+            w(-1) = w(-1) + cm; w(1) = w(1) + cp; w(0) = w(0) - cm - cp
+            if (minval(w) < 0._wp) call s_mpi_abort("LSO: negative stretched-x filter weight; x grid varies too fast")
+            lso_wx(:,j) = w
+        end do
+        $:GPU_UPDATE(device='[lso_wx]')
+        if (proc_rank == 0) print '(A,I0,A,ES11.4)', ' LSO: stretched x, ', lso_n_passes_xp, ' moment-exact passes, sigma_p ', sig_p
+
+    end subroutine s_lso_setup_x_weights
+
     impure subroutine s_finalize_lso_filter_module()
 
         integer :: i
 
         @:DEALLOCATE(lso_tmp)
+        if (allocated(lso_wx)) then
+            @:DEALLOCATE(lso_wx)
+        end if
 
         if (lso_filter_wrt) then
             do i = 1, sys_size
@@ -269,6 +350,11 @@ contains
             end if
             call s_compute_lso_stat_fields(q_cons_vf, q_lso_T_vf(1))
             call s_apply_lso_stat_filter()
+            if (lso_down_sample_factor > 1) then
+                do i = 1, num_dims
+                    call s_lso_stat_ghost_refresh(i)
+                end do
+            end if
 #ifndef FRONTIER_UNIFIED
             do i = 1, n_lso_stat
                 $:GPU_UPDATE(host='[q_lso_stat_vf(i)%sf]')
@@ -344,6 +430,14 @@ contains
             call s_apply_lso_filter(q_filt_vf)
         end if
 
+        ! Coarse samples of rank-edge cells read fine ghosts (s_lso_stride_sample).
+        if (lso_down_sample_factor > 1) then
+            do i = 1, num_dims
+                call s_lso_filter_ghost_refresh(q_filt_vf, i)
+                if (ib) call s_lso_filter_ghost_refresh(q_lso_mask_vf, i)
+            end do
+        end if
+
         call nvtxEndRange
 
     end subroutine s_copy_and_apply_lso_filter
@@ -356,14 +450,18 @@ contains
     impure subroutine s_apply_lso_filter(q_cons_vf)
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
-        integer                           :: i, ipass, j, k, l, nv
-        real(wp)                          :: c0, c1, c2, c3, c4
+        integer                           :: i, ipass, j, k, l, nv, sx
+        real(wp)                          :: c0, c1, c2, c3, c4, qs
 
         nv = size(q_cons_vf)
+        if (.not. lso_x_ready) call s_lso_setup_x_weights()
 
         call nvtxStartRange("LSO-FILTER-X")
         call s_lso_filter_ghost_refresh(q_cons_vf, 1)
-        do ipass = 1, lso_n_passes_x
+        if (lso_x_phys) then
+            $:LSO_X_PHYS_PASSES('q_cons_vf', 'nv', 's_lso_filter_ghost_refresh(q_cons_vf, 1)')
+        end if
+        do ipass = 1, merge(0, lso_n_passes_x, lso_x_phys)
             c0 = lso_a_x(1, ipass)
             c1 = lso_a_x(2, ipass)
             c2 = lso_a_x(3, ipass)
@@ -486,66 +584,79 @@ contains
     !> Resample q_src_vf into the (pre-allocated) q_dst_vf onto the coarsened grid using trilinear interpolation. Output cell j maps
     !! to source position j*m/m_lso_ds (uniformly spaced from 0 to m), so the first and last cells are always exact and the domain
     !! is fully preserved regardless of divisibility by the stride factor.
+    !> Local fine-index position of coarse cell c (local) in direction d: the index midpoint of its factor fine cells, or on a
+    !! stretched x grid the fine-cell pair around its physical centre, so samples sit at the centres post_process assigns.
+    function f_lso_fine_pos(d, c, sidx) result(pos)
+
+        integer, intent(in) :: d, c, sidx(3)
+        real(wp)            :: pos, xc
+        integer             :: f, i0, j
+
+        f = lso_down_sample_factor
+        i0 = f*(lso_ds_lo(d) + c) - sidx(d)
+        pos = real(i0, wp) + 0.5_wp*real(f - 1, wp)
+        if (d /= 1 .or. .not. lso_x_phys) return
+        xc = 0.5_wp*(x_cb(i0 - 1) + x_cb(i0 + f - 1))
+        j = i0
+        do while (j < i0 + f - 2 .and. x_cc(j + 1) <= xc)
+            j = j + 1
+        end do
+        pos = real(j, wp) + (xc - x_cc(j))/(x_cc(j + 1) - x_cc(j))
+
+    end function f_lso_fine_pos
+
+    !> Sample the filtered fine fields at the coarse cell centres (multilinear between the two nearest fine cells). A coarse cell
+    !! belongs to the rank holding its first fine cell, so samples may read up to factor - 1 refreshed ghost cells.
     impure subroutine s_lso_stride_sample(q_src_vf, q_dst_vf)
 
         type(scalar_field), intent(in)    :: q_src_vf(:)
         type(scalar_field), intent(inout) :: q_dst_vf(:)
-        integer                           :: i, j, k, l, nv
-        integer                           :: j0, j1, k0, k1, l0, l1
-        integer                           :: sidx(3)
-        real(wp)                          :: alpha, beta, gamma_pos, wj, wk, wl
-
-        ! Global offset of this rank's block (start_idx is only allocated with parallel_io).
+        integer                           :: i, j, k, l, sidx(3)
+        integer                           :: j0(0:m_lso_ds), k0(0:n_lso_ds), l0(0:p_lso_ds)
+        real(wp)                          :: wj(0:m_lso_ds), wk(0:n_lso_ds), wl(0:p_lso_ds), pos
 
         sidx = 0
         if (allocated(start_idx)) sidx(1:size(start_idx)) = start_idx
+        do j = 0, m_lso_ds
+            pos = f_lso_fine_pos(1, j, sidx); j0(j) = floor(pos); wj(j) = pos - real(j0(j), wp)
+        end do
+        k0 = 0; wk = 0._wp; l0 = 0; wl = 0._wp
+        do k = 0, merge(n_lso_ds, -1, n > 0)
+            pos = f_lso_fine_pos(2, k, sidx); k0(k) = floor(pos); wk(k) = pos - real(k0(k), wp)
+        end do
+        do l = 0, merge(p_lso_ds, -1, p > 0)
+            pos = f_lso_fine_pos(3, l, sidx); l0(l) = floor(pos); wl(l) = pos - real(l0(l), wp)
+        end do
 
-        nv = size(q_src_vf)
-        do i = 1, nv
+        do i = 1, size(q_src_vf)
             do l = 0, p_lso_ds
-                ! Sample at the coarse-cell centres: fine position (J + 1/2)(m_glb + 1)/(m_glb_ds + 1) - 1/2 for the
-                ! global coarse index J = start_idx/factor + j, so the sample spacing equals the coarse cell size
-                ! (interior-only reads for factor >= 2).
-                if (p_lso_ds > 0) then
-                    gamma_pos = (real(sidx(3)/lso_down_sample_factor + l, wp) + 0.5_wp)*real(p_glb + 1, &
-                                 & wp)/real(p_glb_lso_ds + 1, wp) - 0.5_wp - real(sidx(3), wp)
-                    l0 = floor(gamma_pos); l1 = l0 + 1; wl = gamma_pos - real(l0, wp)
-                else
-                    l0 = 0; l1 = 0; wl = 0._wp
-                end if
-
                 do k = 0, n_lso_ds
-                    if (n_lso_ds > 0) then
-                        beta = (real(sidx(2)/lso_down_sample_factor + k, wp) + 0.5_wp)*real(n_glb + 1, wp)/real(n_glb_lso_ds + 1, &
-                                & wp) - 0.5_wp - real(sidx(2), wp)
-                        k0 = floor(beta); k1 = k0 + 1; wk = beta - real(k0, wp)
-                    else
-                        k0 = 0; k1 = 0; wk = 0._wp
-                    end if
-
                     do j = 0, m_lso_ds
-                        if (m_lso_ds > 0) then
-                            alpha = (real(sidx(1)/lso_down_sample_factor + j, wp) + 0.5_wp)*real(m_glb + 1, &
-                                     & wp)/real(m_glb_lso_ds + 1, wp) - 0.5_wp - real(sidx(1), wp)
-                            j0 = floor(alpha); j1 = j0 + 1; wj = alpha - real(j0, wp)
-                        else
-                            j0 = 0; j1 = 0; wj = 0._wp
-                        end if
-
-                        q_dst_vf(i)%sf(j, k, l) = real((1._wp - wj)*(1._wp - wk)*(1._wp - wl)*real(q_src_vf(i)%sf(j0, k0, l0), &
-                                 & wp) + wj*(1._wp - wk)*(1._wp - wl)*real(q_src_vf(i)%sf(j1, k0, l0), &
-                                 & wp) + (1._wp - wj)*wk*(1._wp - wl)*real(q_src_vf(i)%sf(j0, k1, l0), &
-                                 & wp) + wj*wk*(1._wp - wl)*real(q_src_vf(i)%sf(j1, k1, l0), &
-                                 & wp) + (1._wp - wj)*(1._wp - wk)*wl*real(q_src_vf(i)%sf(j0, k0, l1), &
-                                 & wp) + wj*(1._wp - wk)*wl*real(q_src_vf(i)%sf(j1, k0, l1), &
-                                 & wp) + (1._wp - wj)*wk*wl*real(q_src_vf(i)%sf(j0, k1, l1), &
-                                 & wp) + wj*wk*wl*real(q_src_vf(i)%sf(j1, k1, l1), wp), stp)
+                        q_dst_vf(i)%sf(j, k, l) = real(f_trilinear(q_src_vf(i), j0(j), k0(k), l0(l), wj(j), wk(k), wl(l)), stp)
                     end do
                 end do
             end do
         end do
 
     end subroutine s_lso_stride_sample
+
+    !> Multilinear value between fine cells (a, b, c) and (a+1, b+1, c+1) with fractional weights; inactive directions have zero
+    !! weight and never read their + 1 neighbour.
+    function f_trilinear(q, a, b, c, wa, wb, wc) result(v)
+
+        type(scalar_field), intent(in) :: q
+        integer, intent(in)            :: a, b, c
+        real(wp), intent(in)           :: wa, wb, wc
+        real(wp)                       :: v
+        integer                        :: b1, c1
+
+        b1 = merge(b + 1, b, wb > 0._wp); c1 = merge(c + 1, c, wc > 0._wp)
+        v = (1._wp - wc)*((1._wp - wb)*((1._wp - wa)*real(q%sf(a, b, c), wp) + wa*real(q%sf(a + 1, b, c), &
+             & wp)) + wb*((1._wp - wa)*real(q%sf(a, b1, c), wp) + wa*real(q%sf(a + 1, b1, c), &
+             & wp))) + wc*((1._wp - wb)*((1._wp - wa)*real(q%sf(a, b, c1), wp) + wa*real(q%sf(a + 1, b, c1), &
+             & wp)) + wb*((1._wp - wa)*real(q%sf(a, b1, c1), wp) + wa*real(q%sf(a + 1, b1, c1), wp)))
+
+    end function f_trilinear
 
     !> Host halo refresh for the coarse (decimated) grid used by the stage-2 pyramid cascade: MPI exchange of lso_crs_gw layers on
     !! decomposed directions (sequential counter packing, identical nesting on pack and unpack), then periodic wrap or edge clamp
@@ -1432,11 +1543,15 @@ contains
     !! physical-boundary extrapolation as the flow and mask filters to preserve complementary volume fractions.
     impure subroutine s_apply_lso_stat_filter()
 
-        integer  :: i, ipass, j, k, l
-        real(wp) :: c0, c1, c2, c3, c4
+        integer  :: i, ipass, j, k, l, sx
+        real(wp) :: c0, c1, c2, c3, c4, qs
 
+        if (.not. lso_x_ready) call s_lso_setup_x_weights()
         call s_lso_stat_ghost_refresh(1)
-        do ipass = 1, lso_n_passes_x
+        if (lso_x_phys) then
+            $:LSO_X_PHYS_PASSES('q_lso_stat_vf', 'n_lso_stat', 's_lso_stat_ghost_refresh(1)')
+        end if
+        do ipass = 1, merge(0, lso_n_passes_x, lso_x_phys)
             c0 = lso_a_x(1, ipass)
             c1 = lso_a_x(2, ipass)
             c2 = lso_a_x(3, ipass)
